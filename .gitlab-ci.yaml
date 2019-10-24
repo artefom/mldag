@@ -1,0 +1,26 @@
+# Variables must be defined in gitlab:
+# $DOCKER_REGISTRY_URL -- url of docker hub registry to push built image into
+# $DOCKER_LOGIN -- docker user login
+# $DOCKER_PASSWORD -- docker user password (for password-protected docker registry)
+# $JOB_BUILD_IMAGE -- name of the image used to build docker image (must have docker installed and have access to hub)
+
+# Defined by default:
+# $CI_PROJECT_NAMESPACE -- current namespace of project in gitlab
+# $CI_PROJECT_NAME -- gitlab project name
+
+variables:
+  JOB_BUILD_IMAGE: $DOCKER_REGISTRY_URL/base-images/build:latest
+  IMAGE_NAME: $DOCKER_REGISTRY_URL/$CI_PROJECT_NAMESPACE/$CI_PROJECT_NAME
+  APP_NAME: genn
+
+stages:
+  - build
+
+build:
+  stage: build
+  image: $JOB_BUILD_IMAGE
+  script:
+    - echo $DOCKER_PASSWORD | docker login -u $DOCKER_LOGIN --password-stdin $DOCKER_REGISTRY_URL
+    - make build # See Makefile for build command details
+  variables:
+    IMAGE_TAG: latest
