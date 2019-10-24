@@ -4,7 +4,6 @@ from dask.diagnostics import ProgressBar
 from sklearn import preprocessing
 from .utils import *
 import hashlib
-from .get_meta import *
 import os
 import shutil
 import logging
