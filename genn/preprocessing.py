@@ -11,19 +11,19 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-__all__ = ['get_label_encoder', 'preprocess_chunk', 'preprocess_file', 'save_dataset_meta', 'load_ds']
+__all__ = ['get_label_encoder', 'preprocess_chunk', 'preprocess_ds', 'save_dataset_meta', 'load_ds']
 
 COLUMNS_META_NAME = 'column_meta.csv'
 VAL_META_NAME = 'val_meta.csv'
 
 
 def get_label_encoder(val_meta, col):
-    values = val_meta.loc[col, ['value', 'rank']].sort_values('rank')
-    ranks = values['rank'].values
+    values = val_meta.loc[col, ['value', 'enc']].sort_values('enc')
+    ranks = values['enc'].values
     values = values['value'].astype(str).values
     for i, rank in enumerate(ranks):
         if not i == rank:
-            raise ValueError("Invalid ranks for column {}".format(col))
+            raise ValueError("Invalid encodings for column {}".format(col))
     rv = preprocessing.LabelEncoder()
     rv.classes_ = values
     return rv
@@ -68,10 +68,39 @@ def load_ds(*args,
     return ds
 
 
+def get_categorical_cols(column_meta):
+    return list(column_meta[column_meta['processing_type'].isin(categorical_processing_types)].index)
+
+
+def get_train_columns(column_meta):
+    return list(column_meta[column_meta['processing_type'].isin(train_processing_types)].index)
+
+
+def get_numeric_cols(column_meta):
+    return list(column_meta[column_meta['processing_type'].isin(numeric_processing_types)].index)
+
+
+def get_fillna_value(column_meta, col):
+    return column_meta.loc[col]['fillna']
+
+
+def get_mean_value(column_meta, col):
+    return column_meta.loc[col]['mean']
+
+
+def get_std_value(column_meta, col):
+    return column_meta.loc[col]['std']
+
+
+def get_min_itemsize(column_meta):
+    return {col: max_len for col, max_len in column_meta['max_len'].dropna().iteritems()}
+
+
 def preprocess_chunk(column_meta: pd.DataFrame, val_meta: pd.DataFrame, part: pd.DataFrame, hash_index=False):
     train_columns = get_train_columns(column_meta)
     cat_columns = get_categorical_cols(column_meta)
-    num_columns = get_ordered_cols(column_meta)
+    num_columns = get_numeric_cols(column_meta)
+
     label_encoders = {col: get_label_encoder(val_meta, col) for col in cat_columns if col in train_columns}
     fillna_values = {col: get_fillna_value(column_meta, col) for col in train_columns
                      if not pd.isna(get_fillna_value(column_meta, col))}
@@ -114,7 +143,7 @@ def save_dataset_meta(input_file,
             raise IOError("Directory {} already exists!".format(out_dir))
     logger.info("Getting column and value metadata")
     ds_descr = describe(ds_source)
-    column_meta, val_meta = infer_processing(
+    val_meta, column_meta = infer_processing(
         ds_source,
         ds_descr,
         cat_features=['material',
@@ -128,9 +157,9 @@ def save_dataset_meta(input_file,
     val_meta.to_csv(val_meta_out_file)
 
 
-def preprocess_file(fname,
-                    meta_dir,
-                    rewrite=False):
+def preprocess_ds(fname,
+                  meta_dir,
+                  rewrite=False):
     with ProgressBar():
         column_meta_out_file = os.path.join(meta_dir, COLUMNS_META_NAME)
         val_meta_out_file = os.path.join(meta_dir, VAL_META_NAME)
@@ -138,7 +167,9 @@ def preprocess_file(fname,
         column_meta = pd.read_csv(column_meta_out_file).set_index('column')
         val_meta = pd.read_csv(val_meta_out_file).set_index('column')
 
-        partition_col = list(column_meta[column_meta['processing_class'].isin(partition_classes)].index)
+        print(column_meta)
+
+        partition_col = list(column_meta[column_meta['processing_type'] == ProcessingType.PARTITION.name].index)
         if len(partition_col) != 1:
             raise NotImplementedError()
         partition_col = partition_col[0]

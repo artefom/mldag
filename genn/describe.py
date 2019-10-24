@@ -7,6 +7,9 @@ from enum import Enum, auto
 
 logger = logging.getLogger(__name__)
 
+__all__ = ['VariableType', 'ProcessingType', 'numeric_processing_types', 'categorical_processing_types',
+           'train_processing_types', 'infer_processing', 'describe']
+
 
 class VariableType(Enum):
     ORDERED = auto()
@@ -24,6 +27,17 @@ class ProcessingType(Enum):
     EMBEDDING = auto()
 
 
+numeric_processing_types = {i.name for i in {ProcessingType.NORMALISED}}
+
+categorical_processing_types = {i.name for i in {ProcessingType.FLAG,
+                                                 ProcessingType.ONE_HOT,
+                                                 ProcessingType.EMBEDDING}}
+
+train_processing_types = {i.name for i in {ProcessingType.FLAG,
+                                           ProcessingType.ONE_HOT,
+                                           ProcessingType.NORMALISED,
+                                           ProcessingType.EMBEDDING}}
+
 cache_fname = 'cache.pkl'
 try:
     with open(cache_fname, 'rb') as f:
@@ -37,8 +51,6 @@ def describe_col(col: dd.Series):
     if col.name in describe_col_cache:
         return describe_col_cache[col.name]
 
-    col_len = col.shape[0].compute()
-
     rv = {
         'dtype': col.dtype,
         'n_unique': col.drop_duplicates().count().compute(),
@@ -51,6 +63,11 @@ def describe_col(col: dd.Series):
     vc['frac_cumsum'] = np.cumsum(vc['frac'])
     rv['max_count'] = vc['count'].max()
     rv['min_count'] = vc['count'].min()
+    if col.dtype == object:
+        rv['max_len'] = col.str.len().max().compute()
+    else:
+        rv['max_len'] = None
+
     try:
         vc = vc[vc['count'] > 100]
         rv['n_unique_cutoff'] = len(vc)
@@ -133,7 +150,7 @@ def get_coverage(col_params):
 def get_fillna_value(col_params):
     if is_nullable(col_params):
         if get_var_type(col_params) == VariableType.CATEGORICAL.name:
-            return 'Unknown'
+            return '<Unknown>'
         if get_var_type(col_params) == VariableType.NUMERIC.name:
             return col_params['params']['median']
         if get_var_type(col_params) == VariableType.ORDERED.name:
@@ -141,6 +158,16 @@ def get_fillna_value(col_params):
         raise ValueError("Cannot get fillna value for column {}".format(col_params['params'].name))
     else:
         return None
+
+
+def get_class_repl_value(col_params):
+    coverage = get_coverage(col_params)
+    proc_type = get_processing_type(col_params)
+    if coverage is not None and coverage < 1 and \
+            proc_type != ProcessingType.PARTITION.name and \
+            proc_type != ProcessingType.INDEX.name:
+        return '<Other>'
+    return None
 
 
 def get_max_count(col_params):
@@ -154,6 +181,12 @@ def get_min_count(col_params):
         return col_params['params']['cutoff_min_count']
     if get_var_type(col_params) == VariableType.CATEGORICAL.name:
         return col_params['min_count']
+    return None
+
+
+def get_max_len(col_params):
+    if get_var_type(col_params) == VariableType.CATEGORICAL.name:
+        return col_params['params']['max_len']
     return None
 
 
@@ -211,6 +244,7 @@ def infer_processing(ds, ds_descr, cat_features=None):
         rv[col_name] = {
             'dtype': col_params['params']['dtype'],
             'var_type': get_var_type(col_params),
+            'processing_type': get_processing_type(col_params),
             'nullable': is_nullable(col_params),
             'n_unique': get_n_unique(col_params),
             'n_na': get_n_na(col_params),
@@ -219,9 +253,10 @@ def infer_processing(ds, ds_descr, cat_features=None):
             'n_unique_cutoff': get_n_unique_cutoff(col_params),
             'coverage': get_coverage(col_params),
             'fillna': get_fillna_value(col_params),
+            'repl': get_class_repl_value(col_params),
             'max_count': get_max_count(col_params),
             'min_count': get_min_count(col_params),
-            'processing_type': get_processing_type(col_params)
+            'max_len': get_max_len(col_params),
         }
         val_counts = get_encoding_ids(col_params)
         if val_counts is not None:
