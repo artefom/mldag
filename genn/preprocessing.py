@@ -3,6 +3,7 @@ import dask.dataframe as dd
 from dask.diagnostics import ProgressBar
 from sklearn import preprocessing
 from .utils import *
+from .describe import *
 import hashlib
 import os
 import shutil
@@ -101,34 +102,30 @@ def preprocess_chunk(column_meta: pd.DataFrame, val_meta: pd.DataFrame, part: pd
 
 def save_dataset_meta(input_file,
                       out_dir,
-                      index_col=None,
-                      target_col=None,
-                      cat_cols=None,
                       drop_dir=False):
-    with ProgressBar():
-        partition_col, ds_source = read_file(input_file)
+    partition_col, ds_source = read_file(input_file)
 
-        logging.info("Dtypes:\n{}".format(ds_source.dtypes))
-        out_dir = os.path.abspath(out_dir)
-        if os.path.exists(out_dir):
-            if drop_dir:
-                shutil.rmtree(out_dir)
-            else:
-                raise IOError("Directory {} already exists!".format(out_dir))
-        logger.info("Getting column and value metadata")
-        column_meta, val_meta = get_dataset_meta(ds_source,
-                                                 cat_cols=cat_cols,
-                                                 index_col=index_col,
-                                                 target_col=target_col,
-                                                 partition_col=partition_col)
-        if not os.path.exists(out_dir):
-            os.mkdir(out_dir)
-        column_meta_out_file = os.path.join(out_dir, COLUMNS_META_NAME)
-        val_meta_out_file = os.path.join(out_dir, VAL_META_NAME)
-
-        logger.info("Saving data to disk")
-        column_meta.to_csv(column_meta_out_file)
-        val_meta.to_csv(val_meta_out_file)
+    logging.info("Dtypes:\n{}".format(ds_source.dtypes))
+    out_dir = os.path.abspath(out_dir)
+    if os.path.exists(out_dir):
+        if drop_dir:
+            shutil.rmtree(out_dir)
+        else:
+            raise IOError("Directory {} already exists!".format(out_dir))
+    logger.info("Getting column and value metadata")
+    ds_descr = describe(ds_source)
+    column_meta, val_meta = infer_processing(
+        ds_source,
+        ds_descr,
+        cat_features=['material',
+                      '/bic/client'])
+    if not os.path.exists(out_dir):
+        os.mkdir(out_dir)
+    column_meta_out_file = os.path.join(out_dir, COLUMNS_META_NAME)
+    val_meta_out_file = os.path.join(out_dir, VAL_META_NAME)
+    logger.info("Saving data to disk")
+    column_meta.to_csv(column_meta_out_file)
+    val_meta.to_csv(val_meta_out_file)
 
 
 def preprocess_file(fname,

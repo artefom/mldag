@@ -231,5 +231,5 @@ def infer_processing(ds, ds_descr, cat_features=None):
     rv = pd.DataFrame(rv).T
     rv.index.name = 'column'
 
-    rv_cols = pd.concat(rv_cols).reset_index(drop=True)
+    rv_cols = pd.concat(rv_cols).reset_index(drop=True).set_index('column')
     return rv_cols, rv
