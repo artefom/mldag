@@ -2,7 +2,6 @@ import pandas as pd
 import dask.dataframe as dd
 from dask.diagnostics import ProgressBar
 from sklearn import preprocessing
-from genn.utils import *
 from genn.processing.describe import *
 import hashlib
 import os
@@ -11,7 +10,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-__all__ = ['get_label_encoder', 'preprocess_chunk', 'preprocess_ds', 'save_dataset_meta', 'load_ds']
+__all__ = ['get_label_encoder', 'preprocess_chunk', 'preprocess_ds', 'load_ds']
 
 COLUMNS_META_NAME = 'column_meta.csv'
 VAL_META_NAME = 'val_meta.csv'
@@ -118,20 +117,16 @@ def preprocess_chunk(column_meta: pd.DataFrame, val_meta: pd.DataFrame, part: pd
     for col, enc in label_encoders.items():
         enc: preprocessing.LabelEncoder
         repl_val = get_replace_val(column_meta, col)
-        if repl_val is not None:
-            part[col][(~part[col].astype(str).isin(enc.classes_)) & (~part[col].isna())] = repl_val
+        if not pd.isna(repl_val):
+            part[col] = part.where(~((~part[col].astype(str).isin(enc.classes_)) & (~part[col].isna())), other=repl_val)
         try:
             part[col] = enc.transform(part[col].astype(str))
         except ValueError as ex:
             msg = str(ex)
-            print(part[col].isna().sum())
             raise ValueError("Col {}: {}".format(col, msg)) from None
     # Normalize
     logger.info("Normalizing")
     for col in num_columns:
-        print(col)
-        print(get_mean_value(column_meta, col))
-        print(get_std_value(column_meta, col))
         part[col] = (part[col] - get_mean_value(column_meta, col)) / get_std_value(column_meta, col)
 
     if hash_index:
@@ -139,34 +134,6 @@ def preprocess_chunk(column_meta: pd.DataFrame, val_meta: pd.DataFrame, part: pd
             lambda x: hashlib.sha3_256(str(x).encode('utf-8')).hexdigest()[:5] + '_{:0>8}'.format(x))
     logger.info("Success")
     return part
-
-
-def save_dataset_meta(input_file,
-                      out_dir,
-                      drop_dir=False):
-    partition_col, ds_source = read_file(input_file)
-
-    logging.info("Dtypes:\n{}".format(ds_source.dtypes))
-    out_dir = os.path.abspath(out_dir)
-    if os.path.exists(out_dir):
-        if drop_dir:
-            shutil.rmtree(out_dir)
-        else:
-            raise IOError("Directory {} already exists!".format(out_dir))
-    logger.info("Getting column and value metadata")
-    ds_descr = describe(ds_source)
-    val_meta, column_meta = infer_processing(
-        ds_source,
-        ds_descr,
-        cat_features=['material',
-                      '/bic/client'])
-    if not os.path.exists(out_dir):
-        os.mkdir(out_dir)
-    column_meta_out_file = os.path.join(out_dir, COLUMNS_META_NAME)
-    val_meta_out_file = os.path.join(out_dir, VAL_META_NAME)
-    logger.info("Saving data to disk")
-    column_meta.to_csv(column_meta_out_file)
-    val_meta.to_csv(val_meta_out_file)
 
 
 def preprocess_ds(ds,
