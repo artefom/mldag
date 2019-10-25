@@ -1,11 +1,7 @@
-from enum import Enum, auto
-import numpy as np
-import pandas as pd
 import os
 import dask.dataframe as dd
 
-__all__ = ['is_numeric',
-           'read_file', ]
+__all__ = ['read_file', ]
 
 
 def read_file(file):
@@ -19,9 +15,3 @@ def read_file(file):
         rv = dd.read_parquet(file)
         return rv.index.name, rv
     raise ValueError(f"Extension {ext} not recognized")
-
-
-def is_numeric(col_name, dtype, cat_cols=None):
-    if cat_cols is not None and col_name in cat_cols:
-        return False
-    return np.issubdtype(dtype, np.number)

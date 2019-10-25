@@ -2,8 +2,8 @@ import pandas as pd
 import dask.dataframe as dd
 from dask.diagnostics import ProgressBar
 from sklearn import preprocessing
-from .utils import *
-from .describe import *
+from genn.utils import *
+from genn.processing.describe import *
 import hashlib
 import os
 import shutil
@@ -96,6 +96,10 @@ def get_min_itemsize(column_meta):
     return {col: max_len for col, max_len in column_meta['max_len'].dropna().iteritems()}
 
 
+def get_replace_val(column_meta, col):
+    return column_meta.loc[col]['repl']
+
+
 def preprocess_chunk(column_meta: pd.DataFrame, val_meta: pd.DataFrame, part: pd.DataFrame, hash_index=False):
     train_columns = get_train_columns(column_meta)
     cat_columns = get_categorical_cols(column_meta)
@@ -112,8 +116,16 @@ def preprocess_chunk(column_meta: pd.DataFrame, val_meta: pd.DataFrame, part: pd
     # Encode labels
     logger.info("Encoding labels")
     for col, enc in label_encoders.items():
-        part[col] = enc.transform(part[col].astype(str))
-
+        enc: preprocessing.LabelEncoder
+        repl_val = get_replace_val(column_meta, col)
+        if repl_val is not None:
+            part[col][(~part[col].astype(str).isin(enc.classes_)) & (~part[col].isna())] = repl_val
+        try:
+            part[col] = enc.transform(part[col].astype(str))
+        except ValueError as ex:
+            msg = str(ex)
+            print(part[col].isna().sum())
+            raise ValueError("Col {}: {}".format(col, msg)) from None
     # Normalize
     logger.info("Normalizing")
     for col in num_columns:
@@ -157,34 +169,17 @@ def save_dataset_meta(input_file,
     val_meta.to_csv(val_meta_out_file)
 
 
-def preprocess_ds(fname,
-                  meta_dir,
+def preprocess_ds(ds,
+                  val_meta,
+                  column_meta,
+                  out_fname,
                   rewrite=False):
     with ProgressBar():
-        column_meta_out_file = os.path.join(meta_dir, COLUMNS_META_NAME)
-        val_meta_out_file = os.path.join(meta_dir, VAL_META_NAME)
 
-        column_meta = pd.read_csv(column_meta_out_file).set_index('column')
-        val_meta = pd.read_csv(val_meta_out_file).set_index('column')
+        source_n_partitions = ds.npartitions
 
-        print(column_meta)
-
-        partition_col = list(column_meta[column_meta['processing_type'] == ProcessingType.PARTITION.name].index)
-        if len(partition_col) != 1:
-            raise NotImplementedError()
-        partition_col = partition_col[0]
-
-        source_partition, ds_source = read_file(fname)
-        if source_partition is None:
-            ds_source.set_index(partition_col)
-        else:
-            if ds_source.index.name != partition_col:
-                raise ValueError("ds_source.index does not match partition col!")
-        source_n_partitions = ds_source.npartitions
-
-        out_fname = os.path.splitext(os.path.split(os.path.abspath(fname))[1])[0]
-        processed_ds_out = os.path.join(meta_dir, '{}.hdf'.format(out_fname))
-        processed_ds_out_parquet = os.path.join(meta_dir, '{}.parquet'.format(out_fname))
+        processed_ds_out = os.path.join(os.path.splitext(out_fname)[0], '{}.hdf'.format(out_fname))
+        processed_ds_out_parquet = out_fname
 
         if os.path.exists(processed_ds_out):
             os.remove(processed_ds_out)
@@ -196,7 +191,7 @@ def preprocess_ds(fname,
             raise ValueError("File {} already exist!".format(processed_ds_out_parquet))
 
         min_item_sizes = get_min_itemsize(column_meta)
-        for part_i, part in enumerate(ds_source.partitions):
+        for part_i, part in enumerate(ds.partitions):
             logger.info('Processing chunk {} of {}'.format(part_i + 1, source_n_partitions))
             part_processed = preprocess_chunk(column_meta, val_meta, part.compute())
             part_processed_dd: dd.DataFrame = dd.from_pandas(part_processed, npartitions=source_n_partitions)
@@ -207,4 +202,6 @@ def preprocess_ds(fname,
         # Convert to parquet
         logger.info("Converting to parquet")
         dd.read_hdf(processed_ds_out, 'df').to_parquet(processed_ds_out_parquet)
+
+        # Remove intermediate hdf file
         os.remove(processed_ds_out)

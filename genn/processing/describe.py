@@ -223,12 +223,21 @@ def get_encoding_ids(col_params):
         val_counts = val_counts.sort_index().reset_index().reset_index()
         val_counts.columns = ['enc', 'value', 'count']
 
+        repl_val = get_class_repl_value(col_params)
+        if repl_val is not None:
+            col = ds[col_params['params'].name]
+            num_other = ((~col.isin(val_counts['value'])) & (~col.isna())).sum().compute()
+            other_row = pd.DataFrame([[0, repl_val, num_other]], columns=['enc', 'value', 'count'])
+            val_counts['enc'] += 1
+            val_counts = other_row.append(val_counts).reset_index(drop=True)
+
         fillna_val = get_fillna_value(col_params)
         if fillna_val is not None:
             num_na = ds[col_params['params'].name].isna().sum().compute()
             na_row = pd.DataFrame([[0, fillna_val, num_na]], columns=['enc', 'value', 'count'])
             val_counts['enc'] += 1
             val_counts = na_row.append(val_counts).reset_index(drop=True)
+
         return val_counts
     return None
 
