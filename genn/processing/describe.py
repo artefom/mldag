@@ -69,7 +69,7 @@ def describe_col(col: dd.Series):
         rv['max_len'] = None
 
     try:
-        vc = vc[vc['count'] > 100]
+        vc = vc[vc['count'] > 900]
         rv['n_unique_cutoff'] = len(vc)
         rv['coverage'] = vc.iloc[-1]['frac_cumsum']
         rv['cutoff_min_count'] = vc.iloc[-1]['count']
@@ -109,7 +109,9 @@ def get_var_type(col_params):
 
 
 def is_nullable(col_params):
-    if col_params['params']['n_na'] > 0:
+    if col_params['params']['n_na'] > 0 or \
+            (col_params['nullable'] is not None and
+             col_params['params'].name in col_params['nullable']):
         return True
     return False
 
@@ -242,14 +244,14 @@ def get_encoding_ids(col_params):
     return None
 
 
-def infer_processing(ds, ds_descr, cat_features=None):
+def infer_processing(ds, ds_descr, cat_features=None, nullable=None):
     if cat_features is None:
         cat_features = set()
 
     rv = dict()
     rv_cols = []
     for col_name, col_params in ds_descr.iterrows():
-        col_params = {'params': col_params, 'cat_features': cat_features, 'ds': ds}
+        col_params = {'params': col_params, 'cat_features': cat_features, 'ds': ds, 'nullable': nullable}
         rv[col_name] = {
             'dtype': col_params['params']['dtype'],
             'var_type': get_var_type(col_params),

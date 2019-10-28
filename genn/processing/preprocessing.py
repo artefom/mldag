@@ -141,6 +141,10 @@ def preprocess_ds(ds,
                   column_meta,
                   out_fname,
                   rewrite=False):
+    assert column_meta is not None
+    assert val_meta is not None
+    assert ds is not None
+    assert out_fname is not None
     with ProgressBar():
 
         source_n_partitions = ds.npartitions
@@ -158,6 +162,10 @@ def preprocess_ds(ds,
             raise ValueError("File {} already exist!".format(processed_ds_out_parquet))
 
         min_item_sizes = get_min_itemsize(column_meta)
+        if ds.index.name in min_item_sizes:
+            min_item_sizes['index'] = min_item_sizes[ds.index.name]
+            del min_item_sizes[ds.index.name]
+        logger.info("Min itmsizes: {}".format(min_item_sizes))
         for part_i, part in enumerate(ds.partitions):
             logger.info('Processing chunk {} of {}'.format(part_i + 1, source_n_partitions))
             part_processed = preprocess_chunk(column_meta, val_meta, part.compute())

@@ -83,7 +83,8 @@ class DaskProcessor(TransformerMixin):
     def fit(self, X: dd.DataFrame,
             y=None,
             process_func=None,
-            cat_features=None):
+            cat_features=None,
+            nullable=None):
         ds = self._get_dataframe(X)
         if y is not None:
             raise NotImplementedError()
@@ -117,8 +118,10 @@ class DaskProcessor(TransformerMixin):
         processed_ds = self.get_processed_ds()
 
         val_meta, column_meta = self.get_description()
-        if processing_changed and (val_meta is None or column_meta is None):
-            self._create_description(processed_ds, cat_features=cat_features)
+        if processing_changed or (val_meta is None or column_meta is None):
+            self._create_description(processed_ds,
+                                     cat_features=cat_features,
+                                     nullable=nullable)
 
         val_meta, column_meta = self.get_description()
 
@@ -222,12 +225,21 @@ class DaskProcessor(TransformerMixin):
         return self._meta['description_raw']
 
     def get_description(self):
-        return self._meta['val_meta'].set_index('column'), self._meta['column_meta'].set_index('column')
+        vm = self._meta['val_meta']
+        if vm is not None:
+            vm = vm.set_index('column')
+        cm = self._meta['column_meta']
+        if cm is not None:
+            cm = cm.set_index('column')
+        return vm, cm
 
-    def _create_description(self, ds, cat_features=None):
+    def _create_description(self, ds, cat_features=None, nullable=None):
         description_raw = describe(ds)
         description_raw.to_csv(self._meta_paths['description_raw'])
-        val_meta, column_meta = infer_processing(ds, ds_descr=description_raw, cat_features=cat_features)
+        val_meta, column_meta = infer_processing(ds,
+                                                 ds_descr=description_raw,
+                                                 cat_features=cat_features,
+                                                 nullable=nullable)
         column_meta.to_csv(self._meta_paths['column_meta'])
         val_meta.to_csv(self._meta_paths['val_meta'])
         self.refresh_meta()
