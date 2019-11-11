@@ -1,53 +1,18 @@
+from typing import List, Tuple, Optional
+
 import numpy as np
+import pandas as pd
 import torch.utils.data
-import dask.dataframe as dd
 
-__all__ = ['DaskDataset']
-
-
-def dask_generator(ds, x_cols, y_col, dtype=None):
-    if dtype is None:
-        dtype = np.float32
-    for part in ds.partitions:
-        part = part.compute()
-        X = part[x_cols].astype(dtype)
-        y = part[y_col].astype(dtype)
-        for (loc, row), (y_loc, y) in zip(X.iterrows(), y.iteritems()):
-            yield row.values, y
+__all__ = ['DaskDataLoader', 'DaskDataLoaderIter']
 
 
-class DaskDataset(torch.utils.data.IterableDataset):
-    def __init__(self,
-                 ds: dd.DataFrame,
-                 target_col,
-                 feature_columns=None,
-                 dtype=None):
-        super().__init__()
-        self.ds = ds
-        if target_col not in self.ds.columns:
-            raise ValueError("Column {} not found!".format(target_col))
-        self.target_col = target_col
-        self.dtype = dtype
-        if feature_columns is not None:
-            self.feature_columns = feature_columns
-        else:
-            self.feature_columns = [i for i in self.ds.columns if i != self.target_col]
-
-        for col in self.feature_columns:
-            if col not in ds.columns:
-                raise ValueError("Column {} not found!".format(col))
-        if self.target_col in self.feature_columns:
-            raise ValueError("Target column {} is also in feature columns!".format(self.target_col))
-
-    def __len__(self):
-        return self.ds.shape[0].compute()
-
-    def __iter__(self):
-        worker_info = torch.utils.data.get_worker_info()
-        if worker_info is None:  # single-process data loading, return the full iterator
-            return dask_generator(self.ds, self.feature_columns, self.target_col, dtype=self.dtype)
-        else:  # in a worker process
-            raise NotImplementedError()
+def _assert_sorted(arr):
+    it = iter(arr)
+    v_prev = next(it)
+    for v in it:
+        assert v_prev < v
+        v_prev = v
 
 
 class DaskDataLoaderIter:
@@ -68,7 +33,7 @@ class DaskDataLoader:
     def __init__(self, ds, columns):
         # Get partition sizes
         self.ds = ds
-        self.batches = None
+        self.batches: Optional[List[Tuple[int, int, int]]] = None
 
         self.column_ids = []
         self.all_columns = []
@@ -86,30 +51,29 @@ class DaskDataLoader:
         self.cur_part = None
         self.get_partition(0)
 
-    def infer_batch_split(self, batch_size):
+    def infer_batch_split(self, min_batch_size, max_batch_size):
 
+        # Patch format
         self.batches = list()
 
-        part_lens = list()
         for part_i, part in enumerate(self.ds.partitions):
-            print("\rComputing lengths {} of {} ({:.2f}%)".format(part_i + 1, self.ds.npartitions,
-                                                                  (part_i + 1) / self.ds.npartitions * 100), end='')
-            part_lens.append(part.shape[0].compute())
-        print()
 
-        cur_part = 0
-        cur_ind = 0
-        while cur_part < len(part_lens):
-            batch_part = cur_part
-            batch_beg = cur_ind
-            batch_end = min(part_lens[cur_part], batch_beg + batch_size)
-            batch_size_fact = batch_end - batch_beg
-            if batch_size_fact < batch_size:
-                cur_part += 1
-                cur_ind = 0
-            else:
-                cur_ind = batch_end
-                self.batches.append((batch_part, batch_beg, batch_end))
+            index = pd.Series(part.index.compute())
+            _assert_sorted(index)
+
+            # Dedup index - we want all entries with same index in same batch
+            batch_index = np.array(index.drop_duplicates(keep='last').index)
+
+            ind_max = batch_index[-1]
+
+            batch_end = 0
+            while batch_end < ind_max:
+                batch_beg = batch_end
+                batch_end = batch_index[batch_index < batch_beg + max_batch_size][-1]
+                batch_size = batch_end - batch_beg
+
+                if batch_size >= min_batch_size:
+                    self.batches.append((part_i, batch_beg, batch_end))
 
     def set_batch_split(self, batches):
         self.batches = batches
