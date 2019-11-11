@@ -65,26 +65,10 @@ class DaskDataLoaderIter:
 
 class DaskDataLoader:
 
-    def __init__(self, ds, batch_size, columns):
+    def __init__(self, ds, columns):
         # Get partition sizes
         self.ds = ds
-
-        self.part_lens = [part.shape[0].compute() for part in self.ds.partitions]
-
-        self.batches = []
-        cur_part = 0
-        cur_ind = 0
-        while cur_part < len(self.part_lens):
-            batch_part = cur_part
-            batch_beg = cur_ind
-            batch_end = min(self.part_lens[cur_part], batch_beg + batch_size)
-            batch_size_fact = batch_end - batch_beg
-            if batch_size_fact < batch_size:
-                cur_part += 1
-                cur_ind = 0
-            else:
-                cur_ind = batch_end
-                self.batches.append((batch_part, batch_beg, batch_end))
+        self.batches = None
 
         self.column_ids = []
         self.all_columns = []
@@ -102,6 +86,34 @@ class DaskDataLoader:
         self.cur_part = None
         self.get_partition(0)
 
+    def infer_batch_split(self, batch_size):
+
+        self.batches = list()
+
+        part_lens = list()
+        for part_i, part in enumerate(self.ds.partitions):
+            print("\rComputing lengths {} of {} ({:.2f}%)".format(part_i + 1, self.ds.npartitions,
+                                                                  (part_i + 1) / self.ds.npartitions * 100), end='')
+            part_lens.append(part.shape[0].compute())
+        print()
+
+        cur_part = 0
+        cur_ind = 0
+        while cur_part < len(part_lens):
+            batch_part = cur_part
+            batch_beg = cur_ind
+            batch_end = min(part_lens[cur_part], batch_beg + batch_size)
+            batch_size_fact = batch_end - batch_beg
+            if batch_size_fact < batch_size:
+                cur_part += 1
+                cur_ind = 0
+            else:
+                cur_ind = batch_end
+                self.batches.append((batch_part, batch_beg, batch_end))
+
+    def set_batch_split(self, batches):
+        self.batches = batches
+
     def get_partition(self, part_i):
         if self.cur_part_i is not None and self.cur_part_i == part_i:
             return self.cur_part
@@ -117,7 +129,7 @@ class DaskDataLoader:
         return rv
 
     def __len__(self):
-        return sum([batch_end - batch_beg for batch_i, batch_beg, batch_end in self.batches])
+        return len(self.batches)
 
     def __iter__(self):
         return DaskDataLoaderIter(self)
