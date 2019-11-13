@@ -73,7 +73,6 @@ def do_setup():
         install_requires=[
             'begins',
         ],
-        scripts=['genn/bin/genn'],
         zip_safe=False,
         author="Artyom Fomenko",
         description="Generic Project for tabular data preprocessing and fitting using pytorch",
