@@ -2,12 +2,9 @@ import dask.dataframe as dd
 import pandas as pd
 import numpy as np
 import pytest
-import yaml
-from io import StringIO
 
 from genn.column_processors import StandardScaler, FillNa
-from genn.processors import ColumnProcessor
-from genn.pipeline import DaskPipeline
+from genn.processors import *
 
 ds1 = pd.DataFrame([['cat5', -0.08791349765766582, 1],
                     ['cat2', -0.45607955436914216, np.nan],
