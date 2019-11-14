@@ -5,7 +5,7 @@ import pytest
 import yaml
 from io import StringIO
 
-from genn.mixins import StandardScaler, FillNa
+from genn.column_processors import StandardScaler, FillNa
 from genn.processors import ColumnProcessor
 from genn.pipeline import DaskPipeline
 
@@ -51,12 +51,20 @@ def test_pipeline():
     process_pipeline = DaskPipeline([
         ('transform_columns', ColumnProcessor([StandardScaler(),
                                                FillNa()]))
-    ], meta_folder='meta')
+    ],
+        meta_folder='meta',
+        persist_folder='persist')
 
-    process_pipeline.fit(test_ds)
+    ds_name = 'test_ds'
+
+    process_pipeline.fit(test_ds, ds_name)
     rv = test_ds.compute()
 
-    rv = process_pipeline.transform(process_pipeline.get_meta_folder(), test_ds).compute()
+    rv = process_pipeline.transform(
+        process_pipeline.get_meta_folder(),
+        process_pipeline.get_persist_folder(),
+        ds_name,
+        test_ds).compute()
 
     assert pytest.approx(rv['normal'].mean(), 1E-6) == 0
     assert pytest.approx(rv['normal'].std(), 1E-6) == 1
@@ -67,11 +75,14 @@ def test_processor():
     processor = ColumnProcessor(meta_folder='meta',
                                 column_mixins=[StandardScaler(),
                                                FillNa()])
-
+    ds_name = 'test_ds'
     # Fit dask processor
-    processor.fit(test_ds)
+    processor.fit(test_ds, ds_name)
 
-    transf = processor.transform(processor.get_meta_folder(), test_ds)
+    transf = processor.transform(processor.get_meta_folder(),
+                                 processor.get_persist_folder(),
+                                 ds_name,
+                                 test_ds)
     rv = transf.compute()
     print(rv['normal'].std())
     print(rv['normal'].mean())

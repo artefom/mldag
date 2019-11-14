@@ -14,7 +14,7 @@ def dump_yaml(fname, meta: Union[list, dict]):
 
 def load_yaml(fname) -> Dict[Any, Any]:
     with open(fname, 'r') as f:
-        return yaml.load(f)
+        return yaml.load(f, Loader=yaml.FullLoader)
 
 
 def read_file(file):

@@ -1,23 +1,20 @@
-from typing import List, Dict, Any, Optional
-
-import os
-
-import yaml
-
-import logging
-
 import importlib
+import os
+import shutil
+from typing import List, Tuple, Optional
 
-from .utils import *
-from .base import DaskColumnProcessorMixin, DaskProcessor
 from .exceptions import ProcessingException
-
-from uuid import uuid4
+from .utils import *
+from .base import DaskProcessor, transform, cleanup_persist, DaskColumnProcessorMixin
 
 import pandas as pd
 import dask.dataframe as dd
 
+import logging
+
 logger = logging.getLogger(__name__)
+
+__all__ = ['ColumnProcessor', 'PartitionMapper', 'DaskPipeline']
 
 
 class ColumnProcessor(DaskProcessor):
@@ -33,7 +30,7 @@ class ColumnProcessor(DaskProcessor):
         super().__init__(**kwargs)
         self.column_mixins = column_mixins if column_mixins is not None else []
 
-    def fit(self, dataset: dd.DataFrame):
+    def fit(self, dataset: dd.DataFrame, dataset_name):
         """
         Processes dataset and writes data to disk into meta_folder
         :param dataset: dataset to transform
@@ -71,7 +68,11 @@ class ColumnProcessor(DaskProcessor):
         column_data.to_csv(os.path.join(self.get_meta_folder(), self.COLUMNS_DATA_FILE), index=False)
 
     @classmethod
-    def transform(cls, meta_folder, dataset: dd.DataFrame) -> dd.DataFrame:
+    def transform(cls,
+                  meta_folder,
+                  persist_folder,
+                  dataset_name,
+                  dataset: dd.DataFrame) -> dd.DataFrame:
         """
         Uses previously fitted data from meta_folder to process dataframe and save it to disk
         :param meta_folder:
@@ -85,7 +86,9 @@ class ColumnProcessor(DaskProcessor):
         column_mixins = []
         for column_mixin_def in meta:
             module_name, class_name = column_mixin_def['module'], column_mixin_def['class']
-            column_mixins.append(getattr(importlib.import_module(module_name), class_name))
+            module = importlib.import_module(module_name)
+            module = importlib.reload(module)
+            column_mixins.append(getattr(module, class_name))
 
         for loc, row in columns.iterrows():
             column = row['column']
@@ -101,7 +104,7 @@ class ColumnProcessor(DaskProcessor):
 
 class PartitionMapper(DaskProcessor):
     PROC_FUNC_DEF = 'proc_func_def.yaml'
-    PERSIST_FILE = 'persist.parquet'
+    PERSIST_FILENAME = 'persist.parquet'
 
     def __init__(self,
                  processing_module: str,
@@ -117,14 +120,31 @@ class PartitionMapper(DaskProcessor):
         self.processing_func = process_func
         self.persist = persist
 
-    def fit(self, dataset: dd.DataFrame):
+    def fit(self, dataset: dd.DataFrame, dataset_name):
         meta = {'module': self.processing_module,
                 'func': self.processing_func,
                 'persist': self.persist}
         dump_yaml(os.path.join(self.get_meta_folder(), self.PROC_FUNC_DEF), meta)
 
     @classmethod
-    def transform(cls, meta_folder, dataset: dd.DataFrame):
+    def get_persist_filename(cls, persist_folder, dataset_name):
+        return os.path.join(persist_folder, f"{dataset_name}_{cls.PERSIST_FILENAME}")
+
+    @classmethod
+    def cleanup_persist(cls,
+                        meta_folder,
+                        persist_folder,
+                        dataset_name):
+        persist_file = cls.get_persist_filename(persist_folder, dataset_name)
+        if os.path.exists(persist_file):
+            shutil.rmtree(persist_file)
+
+    @classmethod
+    def transform(cls,
+                  meta_folder,
+                  persist_folder,
+                  dataset_name,
+                  dataset: dd.DataFrame):
         # Load processing func
         meta = load_yaml(os.path.join(meta_folder, cls.PROC_FUNC_DEF))
         processing_module = meta['module']
@@ -132,6 +152,7 @@ class PartitionMapper(DaskProcessor):
         persist = meta['persist']
 
         proc_module = importlib.import_module(processing_module)
+        proc_module = importlib.reload(proc_module)
         proc_func = getattr(proc_module, processing_func)
         out_df = dataset.map_partitions(proc_func)
         ind_name = out_df.index.name
@@ -139,8 +160,103 @@ class PartitionMapper(DaskProcessor):
         out_df = out_df.reset_index().set_index(ind_name)
 
         if persist:
-            persist_file = os.path.join(meta_folder, cls.PERSIST_FILE)
+            persist_file = cls.get_persist_filename(persist_folder, dataset_name)
             out_df.to_parquet(persist_file)
             out_df = dd.read_parquet(persist_file)
 
         return out_df
+
+
+class DaskPipeline(DaskProcessor):
+    """
+    Pipeline for piping multiple processors
+    """
+
+    PIPELINE_FILENAME = 'pipeline_params.yaml'
+    PERSIST_FILENAME = 'persist.parquet'
+
+    def __init__(self,
+                 pipeline: List[Tuple[str, DaskProcessor]],
+                 persist=True, **kwargs):
+        super().__init__(**kwargs)
+        self.pipeline = pipeline
+        self.persist = persist
+        self.setup_pipeline()
+
+    def setup_pipeline(self):
+        for step_name, processor in self.pipeline:
+            processor_meta_folder = os.path.join(self.get_meta_folder(), step_name)
+            processor.set_meta_folder(processor_meta_folder)
+            processor.set_persist_folder(os.path.join(self.get_persist_folder(), step_name))
+            processor.set_categorical_columns(self.get_categorical_columns())
+
+    @classmethod
+    def get_persist_filename(cls, persist_folder, dataset_name):
+        return os.path.join(persist_folder, f"{dataset_name}_{cls.PERSIST_FILENAME}")
+
+    def fit(self, dataset: dd.DataFrame, dataset_name):
+        assert self.get_meta_folder() is not None, "Metadata folder is not set! Use meta_folder='path'"
+
+        #  Dump pipeline to file
+        pipeline_params = {
+            'pipeline_order': [name for name, _ in self.pipeline],
+            'persist': self.persist
+        }
+        dump_yaml(os.path.join(self.get_meta_folder(), self.PIPELINE_FILENAME), pipeline_params)
+
+        rv_before = None
+        rv = dataset
+        for step_name, processor in self.pipeline:
+            # Fit
+            processor.fit(rv, dataset_name)
+
+            # Transform
+            rv_before = rv
+            rv = transform(processor.get_meta_folder(),
+                           processor.get_persist_folder(),
+                           dataset_name,
+                           rv
+                           )
+            assert rv is not rv_before, f"DaskProcessor {str(processor.__class__.__name__)} at step {step_name} " \
+                                        f"must not transform DataFrames inplace!"
+            del rv_before
+
+        del rv
+        # Cleanup everything
+        for step_name, processor in self.pipeline:
+            processor.cleanup_persist(processor.get_meta_folder(),
+                                      processor.get_persist_folder(),
+                                      dataset_name)
+
+    @classmethod
+    def transform(cls,
+                  meta_folder,
+                  persist_folder,
+                  dataset_name,
+                  dataset: dd.DataFrame):
+        # Load pipeline
+        pipeline_params = load_yaml(os.path.join(meta_folder, cls.PIPELINE_FILENAME))
+        calculation_order = pipeline_params['pipeline_order']
+        persist = pipeline_params['persist']
+
+        rv = dataset
+        for step_name in calculation_order:
+            rv = transform(os.path.join(meta_folder, step_name),
+                           os.path.join(persist_folder, step_name),
+                           dataset_name,
+                           rv)
+
+        if persist:
+            persist_filename = cls.get_persist_filename(persist_folder, dataset_name)
+            rv.to_parquet(persist_filename)
+            rv = dd.read_parquet(persist_filename)
+
+            # Cleanup everything
+            for step_name in calculation_order:
+                meta_dir = os.path.join(meta_folder, step_name)
+                persist_folder = os.path.join(persist_folder, step_name)
+                cleanup_persist(meta_dir,
+                                persist_folder,
+                                dataset_name)
+
+        return rv
