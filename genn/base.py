@@ -1,5 +1,7 @@
 from typing import Dict, Any, Optional, List, Set, Union
 
+from datetime import datetime
+
 from enum import Enum, auto
 import yaml
 
@@ -10,7 +12,13 @@ import os
 import pandas as pd
 import dask.dataframe as dd
 
+from .utils import *
+
+import importlib
+
 logger = logging.getLogger(__name__)
+
+CLASS_DEF_FILE = 'class.yaml'
 
 
 class DaskColumnProcessorMixin:
@@ -23,8 +31,46 @@ class DaskColumnProcessorMixin:
         raise NotImplementedError()
 
 
-class DaskProcessor:
-    META_FILE_NAME = 'meta.yaml'
+def fit_wrapper(func):
+    def fit_wrapped(*args, **kwargs):
+        print("Fitting!")
+        return func(*args, **kwargs)
+
+    return fit_wrapped
+
+
+class DaskProcessorMeta(type):
+    @staticmethod
+    def wrap_fit(func):
+        """Return a wrapped instance method"""
+
+        def fit_wrapped(self, *args, **kwargs):
+            class_fname = CLASS_DEF_FILE
+
+            start_d = datetime.now()
+            rv = func(self, *args, **kwargs)
+            end_d = datetime.now()
+
+            with open(os.path.join(self.meta_folder, class_fname), 'w') as f:
+                yaml.dump({
+                    'module': self.__module__,
+                    'class': self.__class__.__name__,
+                    'modified': datetime.now().isoformat(),
+                    'elapsed_seconds': (end_d - start_d).total_seconds(),
+                }, f)
+
+            return rv
+
+        return fit_wrapped
+
+    def __new__(cls, name, bases, attrs):
+        """If the class has a 'run' method, wrap it"""
+        if 'fit' in attrs:
+            attrs['fit'] = cls.wrap_fit(attrs['fit'])
+        return super().__new__(cls, name, bases, attrs)
+
+
+class DaskProcessor(metaclass=DaskProcessorMeta):
 
     def __init__(self,
                  meta_folder: Optional[str] = None,
@@ -63,46 +109,18 @@ class DaskProcessor:
         return os.path.join(self.get_meta_folder(),
                             filename)
 
-    @staticmethod
-    def save_meta(meta_folder, meta: Union[list, dict]):
-        meta_file = os.path.join(meta_folder, DaskProcessor.META_FILE_NAME)
-        with open(meta_file, 'w') as f:
-            yaml.dump(meta, f)
-
-    @staticmethod
-    def load_meta(meta_folder) -> Dict[Any, Any]:
-        meta_file = os.path.join(meta_folder, DaskProcessor.META_FILE_NAME)
-        with open(meta_file, 'r') as f:
-            return yaml.load(f)
-
-    @staticmethod
-    def dump_tables(meta_folder, params: Dict[str, pd.DataFrame]):
-        table_ext = 'csv'
-        for table_name, table in params.items():
-            file_name = os.path.join(meta_folder, '{}.{}'.format(table_name, table_ext))
-            if os.path.exists(file_name):
-                logger.warning("Overwriting {}".format(file_name))
-            table.to_csv(file_name, index=False)
-
-    @staticmethod
-    def load_tables(meta_folder) -> Dict[str, pd.DataFrame]:
-        files = os.listdir(meta_folder)
-        tables = dict()
-        for file in files:
-            table_name = os.path.splitext(file)[0]
-            path = os.path.join(meta_folder, file)
-            if os.path.isdir(path):
-                continue
-            assert os.path.exists(path), "Could not find file %s" % path
-            try:
-                tables[table_name] = pd.read_csv(path)
-            except Exception as ex:
-                raise ValueError("Error reading {}".format(path)) from ex
-        return tables
-
     def fit(self, dataset: dd.DataFrame):
         raise NotImplementedError()
 
     @classmethod
     def transform(cls, meta_folder, dataset: dd.DataFrame):
         raise NotImplementedError()
+
+
+def transform(meta_folder, dataset: dd.DataFrame) -> dd.DataFrame:
+    # Read class data from folder
+    class_meta = load_yaml(os.path.join(meta_folder, CLASS_DEF_FILE))
+    module_name = class_meta['module']
+    class_name = class_meta['class']
+    cls: DaskProcessor = getattr(importlib.import_module(module_name), class_name)
+    return cls.transform(meta_folder, dataset)

@@ -1,7 +1,20 @@
 import os
 import dask.dataframe as dd
+import yaml
+from typing import Union, Dict, Any
+import os
 
-__all__ = ['read_file', ]
+__all__ = ['read_file', 'dump_yaml', 'load_yaml']
+
+
+def dump_yaml(fname, meta: Union[list, dict]):
+    with open(fname, 'w') as f:
+        yaml.dump(meta, f)
+
+
+def load_yaml(fname) -> Dict[Any, Any]:
+    with open(fname, 'r') as f:
+        return yaml.load(f)
 
 
 def read_file(file):

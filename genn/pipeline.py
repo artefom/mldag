@@ -1,5 +1,6 @@
 from typing import List, Tuple, Any, Optional
-from .base import DaskProcessor
+from .base import DaskProcessor, transform
+from .utils import *
 import dask.dataframe as dd
 import importlib
 import os
@@ -10,7 +11,9 @@ class DaskPipeline(DaskProcessor):
     Pipeline for piping multiple processors
     """
 
-    def __init__(self, pipeline: List[Tuple[str, DaskProcessor]], **kwargs):
+    PIPELINE_FNAME = 'pipeline.yaml'
+
+    def __init__(self, pipeline: List[Tuple[str, DaskProcessor]] = 10, **kwargs):
         super().__init__(**kwargs)
         self.pipeline = pipeline
 
@@ -18,15 +21,8 @@ class DaskPipeline(DaskProcessor):
         assert self.get_meta_folder() is not None, "Metadata folder is not set! Use meta_folder='path'"
 
         #  Dump pipeline to file
-        meta = list()
-        for step_name, processor in self.pipeline:
-            processor_meta = {
-                'name': step_name,
-                'module': processor.__module__,
-                'class': processor.__class__.__name__,
-            }
-            meta.append(processor_meta)
-        self.save_meta(self.get_meta_folder(), meta)
+        pipeline_order = [name for name, _ in self.pipeline]
+        dump_yaml(os.path.join(self.get_meta_folder(), self.PIPELINE_FNAME), pipeline_order)
 
         rv = dataset
         for step_name, processor in self.pipeline:
@@ -42,18 +38,11 @@ class DaskPipeline(DaskProcessor):
 
     @classmethod
     def transform(cls, meta_folder, dataset: dd.DataFrame):
-
         # Load pipeline
-        pipeline = []
-        meta = cls.load_meta(meta_folder)
-        for processor_def in meta:
-            step_name = processor_def['name']
-            module_name = processor_def['module']
-            class_name = processor_def['class']
-            pipeline.append((step_name, getattr(importlib.import_module(module_name), class_name)))
+        calculation_order = load_yaml(os.path.join(meta_folder, cls.PIPELINE_FNAME))
 
         rv = dataset
-        for step_name, processor in pipeline:
+        for step_name in calculation_order:
             meta_dir = os.path.join(meta_folder, step_name)
-            rv = processor.transform(meta_dir, rv)
+            rv = transform(meta_dir, rv)
         return rv

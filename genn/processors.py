@@ -8,6 +8,7 @@ import logging
 
 import importlib
 
+from .utils import *
 from .base import DaskColumnProcessorMixin, DaskProcessor
 from .exceptions import ProcessingException
 
@@ -23,8 +24,8 @@ class ColumnProcessor(DaskProcessor):
     """
     Class for applying transformations to columns
     """
-    COLUMNS_DATA_FILE = 'columns'
-    META_FILE = 'meta'
+    COLUMNS_DATA_FILE = 'columns.csv'
+    COLUMN_PROCESSORS_FILE = 'column_processors.yaml'
 
     def __init__(self,
                  column_mixins: Optional[List[DaskColumnProcessorMixin]] = None,
@@ -42,12 +43,14 @@ class ColumnProcessor(DaskProcessor):
 
         # Dump column mixins
         #  Dump pipeline to file
-        meta = [{'module': mi.__module__,
-                 'class': mi.__class__.__name__}
-                for mi in self.column_mixins]
-        self.save_meta(self.get_meta_folder(), meta)
+        column_processors = [{'module': mi.__module__,
+                              'class': mi.__class__.__name__}
+                             for mi in self.column_mixins]
 
-        total_tables[ColumnProcessor.COLUMNS_DATA_FILE] = list()
+        dump_yaml(os.path.join(self.get_meta_folder(), self.COLUMN_PROCESSORS_FILE), column_processors)
+
+        column_data = list()
+
         cat_columns = self.get_categorical_columns()
         for column in dataset.columns:
             print("Processing column {}".format(column))
@@ -62,10 +65,10 @@ class ColumnProcessor(DaskProcessor):
                 except ProcessingException:
                     pass
 
-            total_tables['columns'].append(col_stats)
+            column_data.append(col_stats)
 
-        total_tables = {k: pd.DataFrame(v) for k, v in total_tables.items()}
-        self.dump_tables(self.get_meta_folder(), total_tables)
+        column_data = pd.DataFrame(column_data)
+        column_data.to_csv(os.path.join(self.get_meta_folder(), self.COLUMNS_DATA_FILE), index=False)
 
     @classmethod
     def transform(cls, meta_folder, dataset: dd.DataFrame) -> dd.DataFrame:
@@ -76,11 +79,9 @@ class ColumnProcessor(DaskProcessor):
         :return: copy of dataset with transformation
         """
         dataset = dataset.copy()
-        tables = cls.load_tables(meta_folder)
-        columns = tables['columns']
+        columns = pd.read_csv(os.path.join(meta_folder, cls.COLUMNS_DATA_FILE))
+        meta = load_yaml(os.path.join(meta_folder, cls.COLUMN_PROCESSORS_FILE))
 
-        # load column mixins
-        meta = cls.load_meta(meta_folder)
         column_mixins = []
         for column_mixin_def in meta:
             module_name, class_name = column_mixin_def['module'], column_mixin_def['class']
@@ -99,8 +100,8 @@ class ColumnProcessor(DaskProcessor):
 
 
 class PartitionMapper(DaskProcessor):
-    META_FILE = 'meta.yaml'
-    PERSIST_FILE = 'persist.yaml'
+    PROC_FUNC_DEF = 'proc_func_def.yaml'
+    PERSIST_FILE = 'persist.parquet'
 
     def __init__(self,
                  processing_module: str,
@@ -120,12 +121,12 @@ class PartitionMapper(DaskProcessor):
         meta = {'module': self.processing_module,
                 'func': self.processing_func,
                 'persist': self.persist}
-        self.save_meta(self.get_meta_folder(), meta)
+        dump_yaml(os.path.join(self.get_meta_folder(), self.PROC_FUNC_DEF), meta)
 
     @classmethod
     def transform(cls, meta_folder, dataset: dd.DataFrame):
         # Load processing func
-        meta = cls.load_meta(meta_folder)
+        meta = load_yaml(os.path.join(meta_folder, cls.PROC_FUNC_DEF))
         processing_module = meta['module']
         processing_func = meta['func']
         persist = meta['persist']
@@ -133,9 +134,12 @@ class PartitionMapper(DaskProcessor):
         proc_module = importlib.import_module(processing_module)
         proc_func = getattr(proc_module, processing_func)
         out_df = dataset.map_partitions(proc_func)
+        ind_name = out_df.index.name
+
+        out_df = out_df.reset_index().set_index(ind_name)
 
         if persist:
-            persist_file = os.path.join(meta_folder, 'persist.parquet')
+            persist_file = os.path.join(meta_folder, cls.PERSIST_FILE)
             out_df.to_parquet(persist_file)
             out_df = dd.read_parquet(persist_file)
 
