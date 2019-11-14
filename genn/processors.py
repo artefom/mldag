@@ -228,6 +228,43 @@ class DaskPipeline(DaskProcessor):
                                       processor.get_persist_folder(),
                                       dataset_name)
 
+        # Cleanup empty meta directories
+        for d in os.listdir(self.get_meta_folder()):
+            d = os.path.join(self.get_meta_folder(), d)
+            if os.path.isdir(d) and len(os.listdir(d)) == 0:
+                shutil.rmtree(d)
+
+        # Cleanup empty persist directories
+        for d in os.listdir(self.get_persist_folder()):
+            d = os.path.join(self.get_persist_folder(), d)
+            if os.path.isdir(d) and len(os.listdir(d)) == 0:
+                shutil.rmtree(d)
+
+    @classmethod
+    def load_pipeline(cls, meta_folder):
+        pipeline_params = load_yaml(os.path.join(meta_folder, cls.PIPELINE_FILENAME))
+        calculation_order = pipeline_params['pipeline_order']
+        persist = pipeline_params['persist']
+        return calculation_order, persist
+
+    @classmethod
+    def cleanup_persist(cls,
+                        meta_folder,
+                        persist_folder,
+                        dataset_name):
+        pipeline, persist = cls.load_pipeline(meta_folder)
+        for step_name, processor in pipeline:
+            meta_dir = os.path.join(meta_folder, step_name)
+            persist_folder = os.path.join(persist_folder, step_name)
+            cleanup_persist(meta_dir,
+                            persist_folder,
+                            dataset_name)
+
+        if persist:
+            persist_filename = cls.get_persist_filename(persist_folder, dataset_name)
+            if os.path.exists(persist_filename):
+                shutil.rmtree(persist_filename)
+
     @classmethod
     def transform(cls,
                   meta_folder,
@@ -235,9 +272,7 @@ class DaskPipeline(DaskProcessor):
                   dataset_name,
                   dataset: dd.DataFrame):
         # Load pipeline
-        pipeline_params = load_yaml(os.path.join(meta_folder, cls.PIPELINE_FILENAME))
-        calculation_order = pipeline_params['pipeline_order']
-        persist = pipeline_params['persist']
+        calculation_order, persist = cls.load_pipeline(meta_folder)
 
         rv = dataset
         for step_name in calculation_order:
@@ -253,10 +288,14 @@ class DaskPipeline(DaskProcessor):
 
             # Cleanup everything
             for step_name in calculation_order:
-                meta_dir = os.path.join(meta_folder, step_name)
-                persist_folder = os.path.join(persist_folder, step_name)
-                cleanup_persist(meta_dir,
-                                persist_folder,
+                cleanup_persist(os.path.join(meta_folder, step_name),
+                                os.path.join(persist_folder, step_name),
                                 dataset_name)
+
+        # Cleanup empty persist directories
+        for d in os.listdir(persist_folder):
+            d = os.path.join(persist_folder, d)
+            if os.path.isdir(d) and len(os.listdir(d)) == 0:
+                shutil.rmtree(d)
 
         return rv
