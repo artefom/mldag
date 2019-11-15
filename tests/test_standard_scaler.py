@@ -2,6 +2,7 @@ import dask.dataframe as dd
 import pandas as pd
 import numpy as np
 import pytest
+import os
 
 import dask_pipes as dp
 
@@ -31,6 +32,20 @@ ds1['normal'] += 2
 ds2['normal'] += 5
 test_ds = dd.concat([ds1, ds2])
 
+tmp_folder = 'tmp'
+if not os.path.exists(tmp_folder):
+    os.mkdir(tmp_folder)
+
+meta_folder = os.path.join(tmp_folder, 'meta')
+persist_folder = os.path.join(tmp_folder, 'persist')
+
+if not os.path.exists(meta_folder):
+    os.mkdir(meta_folder)
+if not os.path.exists(persist_folder):
+    os.mkdir(persist_folder)
+
+ds_name = 'test_ds'
+
 
 def test_standard_scaler():
     cp = dp.StandardScaler()
@@ -44,10 +59,6 @@ def test_standard_scaler():
 
 
 def test_pipeline():
-    meta_folder = 'tmp/meta'
-    persist_folder = 'tmp/persist'
-    ds_name = 'test_ds'
-
     # Define dask processor
     process_pipeline = dp.Sequence([
         ('transform_columns', dp.ColumnMap([dp.StandardScaler(),
@@ -64,10 +75,6 @@ def test_pipeline():
 
 
 def test_processor():
-    meta_folder = 'tmp/meta'
-    persist_folder = 'tmp/persist'
-    ds_name = 'tmp/test_ds'
-
     # Define dask processor
     processor = dp.ColumnMap(column_mixins=[dp.StandardScaler(),
                                             dp.FillNa()])

@@ -49,8 +49,15 @@ class Sequence(dp.DaskProcessor):
 
         rv = dataset
         for step_name, processor in self.pipeline:
-            rv = processor.fit_transform(os.path.join(meta_folder, step_name),
-                                         os.path.join(persist_folder, step_name),
+            processor_meta_folder = os.path.join(meta_folder, step_name)
+            processor_persist_folder = os.path.join(meta_folder, step_name)
+
+            if not os.path.exists(processor_meta_folder):
+                os.mkdir(processor_meta_folder)
+            if not os.path.exists(processor_persist_folder):
+                os.mkdir(processor_persist_folder)
+            rv = processor.fit_transform(processor_meta_folder,
+                                         processor_persist_folder,
                                          rv,
                                          dataset_name)
         del rv
