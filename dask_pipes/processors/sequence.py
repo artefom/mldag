@@ -6,7 +6,7 @@ from dask import dataframe as dd
 from dask.diagnostics import ProgressBar
 
 import dask_pipes as dp
-from dask_pipes.utils import dump_yaml, load_yaml, cleanup_empty_dirs
+from ..utils import dump_yaml, load_yaml, cleanup_empty_dirs
 
 import logging
 

@@ -7,7 +7,7 @@ from dask.diagnostics import ProgressBar
 
 import dask_pipes as dp
 
-from dask_pipes.utils import dump_yaml, load_yaml
+from ..utils import dump_yaml, load_yaml
 
 import logging
 
