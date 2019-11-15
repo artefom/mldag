@@ -1,6 +1,8 @@
 Dask-pipes
 ====================================
-*architectural sugar for dask out of memory processing workflow*
+**architectural sugar for dask out of memory processing workflow**
+
+![](https://github.com/artefom/dask-pipes/workflows/unit-test/badge.svg?branch=master)
 
 Usage
 ------------------------------------
