@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 import pytest
 
-from processors.columnmappers import StandardScaler, FillNa
 import dask_pipes as dp
 
 ds1 = pd.DataFrame([['cat5', -0.08791349765766582, 1],
@@ -34,7 +33,7 @@ test_ds = dd.concat([ds1, ds2])
 
 
 def test_standard_scaler():
-    cp = StandardScaler()
+    cp = dp.StandardScaler()
 
     stats = cp.get_stats(test_ds['normal'])
     mean = stats['mean']
@@ -45,14 +44,14 @@ def test_standard_scaler():
 
 
 def test_pipeline():
-    meta_folder = 'meta'
-    persist_folder = 'persist'
+    meta_folder = 'tmp/meta'
+    persist_folder = 'tmp/persist'
     ds_name = 'test_ds'
 
     # Define dask processor
     process_pipeline = dp.Sequence([
-        ('transform_columns', dp.ColumnMap([StandardScaler(),
-                                            FillNa()]))
+        ('transform_columns', dp.ColumnMap([dp.StandardScaler(),
+                                            dp.FillNa()]))
     ])
 
     # Fit dask processor
@@ -65,13 +64,13 @@ def test_pipeline():
 
 
 def test_processor():
-    meta_folder = 'meta'
-    persist_folder = 'persist'
-    ds_name = 'test_ds'
+    meta_folder = 'tmp/meta'
+    persist_folder = 'tmp/persist'
+    ds_name = 'tmp/test_ds'
 
     # Define dask processor
-    processor = dp.ColumnMap(column_mixins=[StandardScaler(),
-                                            FillNa()])
+    processor = dp.ColumnMap(column_mixins=[dp.StandardScaler(),
+                                            dp.FillNa()])
 
     # Fit dask processor
     processor.fit(meta_folder, persist_folder, test_ds, ds_name)

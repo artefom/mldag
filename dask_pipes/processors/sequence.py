@@ -35,7 +35,7 @@ class Sequence(dp.DaskProcessor):
 
     @classmethod
     def get_persist_filename(cls, persist_folder, dataset_name):
-        return os.path.join(persist_folder, "%s_%s" % dataset_name, cls.PERSIST_FILENAME)
+        return os.path.join(persist_folder, "%s_%s" % (dataset_name, cls.PERSIST_FILENAME))
 
     def fit(self, meta_folder, persist_folder, dataset: dd.DataFrame, dataset_name):
         assert meta_folder is not None, "Metadata folder is not set! Use meta_folder='path'"

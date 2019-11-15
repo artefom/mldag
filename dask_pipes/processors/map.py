@@ -40,7 +40,7 @@ class Map(dp.DaskProcessor):
 
     @classmethod
     def get_persist_filename(cls, persist_folder, dataset_name):
-        return os.path.join(persist_folder, "%s_%s" % dataset_name, cls.PERSIST_FILENAME)
+        return os.path.join(persist_folder, "%s_%s" % (dataset_name, cls.PERSIST_FILENAME))
 
     @classmethod
     def cleanup_persist(cls,
