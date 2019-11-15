@@ -48,4 +48,4 @@ def read_file(file):
     if ext == '.parquet':
         rv = dd.read_parquet(file)
         return rv.index.name, rv
-    raise ValueError(f"Extension {ext} not recognized")
+    raise ValueError("Extension %s not recognized" % ext)

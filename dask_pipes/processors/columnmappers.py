@@ -35,7 +35,7 @@ class StandardScaler(dp.DaskColumnMapper):
         if not pd.isna(mean) and not pd.isna(std):
             return (column - mean) / std
         else:
-            raise dp.ProcessingException(f"Could not normalize column {column.name}: no mean, std values")
+            raise dp.ProcessingException("Could not normalize column %s: no mean, std values" % column.name)
 
 
 class FillNa(dp.DaskColumnMapper):
@@ -57,7 +57,7 @@ class FillNa(dp.DaskColumnMapper):
     def get_stats(self, column: dd.Series, force_categorical=False) -> Dict[str, Any]:
 
         if column.isna().sum().compute() == 0:
-            raise dp.ProcessingException(f"Column {column.name} does not contain nan")
+            raise dp.ProcessingException("Column %s does not contain nan" % column.name)
 
         if np.issubdtype(column.dtype, np.number) and not force_categorical:
             if self.numeric_method == 'median':
@@ -86,7 +86,7 @@ class FillNa(dp.DaskColumnMapper):
     def transform(cls, column: dd.Series, params: Dict[str, Any]) -> dd.DataFrame:
         fillna = params.get('fillna', None)
         if pd.isna(fillna):
-            raise dp.ProcessingException(f"Could not fillna column {column.name}: no fillna value")
+            raise dp.ProcessingException("Could not fillna column %s: no fillna value" % column.name)
 
         try:
             fillna = float(fillna)

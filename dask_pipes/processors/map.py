@@ -40,7 +40,7 @@ class Map(dp.DaskProcessor):
 
     @classmethod
     def get_persist_filename(cls, persist_folder, dataset_name):
-        return os.path.join(persist_folder, f"{dataset_name}_{cls.PERSIST_FILENAME}")
+        return os.path.join(persist_folder, "%s_%s" % dataset_name, cls.PERSIST_FILENAME)
 
     @classmethod
     def cleanup_persist(cls,
@@ -69,7 +69,7 @@ class Map(dp.DaskProcessor):
 
         if persist:
             persist_file = cls.get_persist_filename(persist_folder, dataset_name)
-            logger.info(f"Mapping partitions...")
+            logger.info("Mapping partitions...")
             with ProgressBar():
                 out_df.to_parquet(persist_file)
             out_df = dd.read_parquet(persist_file)

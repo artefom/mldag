@@ -48,7 +48,7 @@ class ColumnMap(dp.DaskProcessor):
         column_data = list()
 
         cat_columns = self.get_categorical_columns()
-        logger.info(f"Computing column statistics")
+        logger.info("Computing column statistics")
         for column in dataset.columns:
             logging.info("Processing column {}".format(column))
             col_stats = dict()

@@ -35,7 +35,7 @@ class Sequence(dp.DaskProcessor):
 
     @classmethod
     def get_persist_filename(cls, persist_folder, dataset_name):
-        return os.path.join(persist_folder, f"{dataset_name}_{cls.PERSIST_FILENAME}")
+        return os.path.join(persist_folder, "%s_%s" % dataset_name, cls.PERSIST_FILENAME)
 
     def fit(self, meta_folder, persist_folder, dataset: dd.DataFrame, dataset_name):
         assert meta_folder is not None, "Metadata folder is not set! Use meta_folder='path'"
@@ -100,7 +100,7 @@ class Sequence(dp.DaskProcessor):
 
         if persist:
             persist_filename = cls.get_persist_filename(persist_folder, dataset_name)
-            logger.info(f"Saving pipeline output to {persist_filename}")
+            logger.info("Saving pipeline output to %s", persist_filename)
             with ProgressBar():
                 rv.to_parquet(persist_filename)
             rv = dd.read_parquet(persist_filename)
