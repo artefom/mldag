@@ -3,6 +3,10 @@ import os
 import io
 import logging
 from setuptools import setup, find_packages
+from typing import List
+import pathlib
+
+PARENT = pathlib.Path(__file__).parent
 
 logger = logging.getLogger(__name__)
 
@@ -22,14 +26,18 @@ except FileNotFoundError:
     long_description = ''
 
 
+def read_requirements(path: str) -> List[str]:
+    file_path = PARENT / path
+    with open(file_path) as f:
+        return f.read().split('\n')
+
+
 def do_setup():
     setup(
         name="dask_pipes",
         version=version,
         packages=find_packages(exclude=['tests', 'tests.*', 'home']),
-        install_requires=[
-            'begins',
-        ],
+        install_requires=read_requirements('requirements.txt'),
         zip_safe=False,
         author="Artyom Fomenko",
         description="Generic Project for tabular data preprocessing and fitting using pytorch",
