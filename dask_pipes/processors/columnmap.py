@@ -35,7 +35,6 @@ class ColumnMap(dp.DaskProcessor):
         :param dataset_name: dataset name
         :return:
         """
-        total_tables = dict()
 
         # Dump column mixins
         #  Dump pipeline to file
