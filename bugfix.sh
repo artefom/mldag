@@ -10,7 +10,7 @@ NEW_VER=${LAST_VERSION[0]}.${LAST_VERSION[1]}.${NEW_VER}
 PYVERSION="version = '$( echo "${NEW_VER}" | sed 's/v//g')'"
 
 # Commit to github
-echo ${PYVERSION} > genn/version.py
+echo ${PYVERSION} > dask_pipes/version.py
 
 git add -A
 git commit -m "$1"

@@ -3,8 +3,8 @@ import pandas as pd
 import numpy as np
 import pytest
 
-from genn.column_processors import StandardScaler, FillNa
-from genn.processors import *
+from processors.columnmappers import StandardScaler, FillNa
+import dask_pipes as dp
 
 ds1 = pd.DataFrame([['cat5', -0.08791349765766582, 1],
                     ['cat2', -0.45607955436914216, np.nan],
@@ -45,42 +45,39 @@ def test_standard_scaler():
 
 
 def test_pipeline():
-    process_pipeline = DaskPipeline([
-        ('transform_columns', ColumnProcessor([StandardScaler(),
-                                               FillNa()]))
-    ],
-        meta_folder='meta',
-        persist_folder='persist')
-
+    meta_folder = 'meta'
+    persist_folder = 'persist'
     ds_name = 'test_ds'
 
-    process_pipeline.fit(test_ds, ds_name)
-    rv = test_ds.compute()
+    # Define dask processor
+    process_pipeline = dp.Sequence([
+        ('transform_columns', dp.ColumnMap([StandardScaler(),
+                                            FillNa()]))
+    ])
 
-    rv = process_pipeline.transform(
-        process_pipeline.get_meta_folder(),
-        process_pipeline.get_persist_folder(),
-        ds_name,
-        test_ds).compute()
+    # Fit dask processor
+    process_pipeline.fit(meta_folder, persist_folder, test_ds, ds_name)
+
+    rv = dp.transform(meta_folder, persist_folder, test_ds, ds_name).compute()
 
     assert pytest.approx(rv['normal'].mean(), 1E-6) == 0
     assert pytest.approx(rv['normal'].std(), 1E-6) == 1
 
 
 def test_processor():
-    # Define dask processor
-    processor = ColumnProcessor(meta_folder='meta',
-                                column_mixins=[StandardScaler(),
-                                               FillNa()])
+    meta_folder = 'meta'
+    persist_folder = 'persist'
     ds_name = 'test_ds'
-    # Fit dask processor
-    processor.fit(test_ds, ds_name)
 
-    transf = processor.transform(processor.get_meta_folder(),
-                                 processor.get_persist_folder(),
-                                 ds_name,
-                                 test_ds)
-    rv = transf.compute()
+    # Define dask processor
+    processor = dp.ColumnMap(column_mixins=[StandardScaler(),
+                                            FillNa()])
+
+    # Fit dask processor
+    processor.fit(meta_folder, persist_folder, test_ds, ds_name)
+
+    rv = dp.transform(meta_folder, persist_folder, test_ds, ds_name).compute()
+
     print(rv['normal'].std())
     print(rv['normal'].mean())
 
