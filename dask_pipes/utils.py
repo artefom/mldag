@@ -22,9 +22,7 @@ def is_int(x):
         return False
 
 
-def import_class(class_meta):
-    module_name = class_meta['module']
-    class_name = class_meta['class']
+def import_class(module_name, class_name):
     module = importlib.import_module(module_name)
     module = importlib.reload(module)
     cls = getattr(module, class_name)
@@ -49,7 +47,18 @@ def cleanup_empty_dirs(folder):
             shutil.rmtree(d)
 
 
+def convert_to_list(x):
+    if isinstance(x, set) or isinstance(x, tuple):
+        x = list(x)
+    if isinstance(x, list):
+        return [convert_to_list(i) for i in x]
+    if isinstance(x, dict):
+        return {k: convert_to_list(v) for k, v in x.items()}
+    return x
+
+
 def dump_yaml(fname, meta: Union[list, dict]):
+    meta = convert_to_list(meta)
     with open(fname, 'w') as f:
         yaml.dump(meta, f)
 

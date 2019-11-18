@@ -2,10 +2,10 @@ from typing import Dict, Any
 
 from dask import dataframe as dd
 
-__all__ = ['DaskColumnMapper']
+__all__ = ['SingleColumnMapper']
 
 
-class DaskColumnMapper:
+class SingleColumnMapper:
     """
     Base class for arbitrary column processing, used by base.`dask_pipes.processors.ColumnMap`
     """

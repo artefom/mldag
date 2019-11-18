@@ -58,7 +58,7 @@ class PipelineBase:
 
         return execution_plan
 
-    def fit(self, *args, **kwargs):
+    def _iterate_graph(self, transform, get_upstream_task_ids, *args, **kwargs):
         input_params = []
         for ds in args:
             if not isinstance(ds, dd.DataFrame):
@@ -70,21 +70,18 @@ class PipelineBase:
             input_params.append((k, ds))
 
         exec_plan = self.get_execution_plan()
-
         operator_outputs = dict()
         output_nodes = set()
-
         for task_id in exec_plan:
-            task: BaseOperator = self.task_dict[task_id]
             inp_datasets = dict()
-            if task is self.input_operator:
+            if task_id == 'input':
                 for ds_id, ds in enumerate(args):
                     inp_datasets[str(ds_id)] = ds
                 for ds_key, ds in enumerate(kwargs):
                     inp_datasets[ds_key] = ds
             else:
                 input_num = 0
-                for this_slot, upstream_slot, upstream_task_id in task.upstream_task_ids:
+                for this_slot, upstream_slot, upstream_task_id in get_upstream_task_ids(task_id):
                     if this_slot == '*':
                         if upstream_slot == '*':
                             output_nodes.remove(upstream_task_id)
@@ -123,23 +120,18 @@ class PipelineBase:
                     operator_outputs[task_id][dataset_name] = dataset
                 else:
                     output_nodes.add(task_id)
-                    task.fit(params_storage, persist_storage, dataset.copy())
-                    params_storage.dump()
-                    persist_storage.dump()
-                    transformed = task.__class__.transform(params_storage, persist_storage, dataset.copy(), 'fitting')
-                    params_storage.dump()
-                    persist_storage.dump()
+                    transformed = transform(task_id, params_storage, persist_storage, dataset.copy())
                     operator_outputs[task_id][dataset_name] = transformed
 
         rv = dict()
         for out_node_id in output_nodes:
             for k, v in operator_outputs[out_node_id].items():
                 rv[(out_node_id, k)] = v
-        if len(rv) == 0:
-            return None
-        if len(rv) == 1:
-            return next(iter(rv.values()))
+
         return rv
+
+    def fit(self, *args, **kwargs):
+        raise NotImplementedError()
 
     def transform(self, *args, **kwargs):
         raise NotImplementedError()

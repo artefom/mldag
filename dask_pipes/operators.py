@@ -1,18 +1,17 @@
 from typing import Optional, List
 from dask import dataframe as dd
 import pandas as pd
-from .base import BaseOperator, StorageBase
-from dask_pipes.base.columnmapper import DaskColumnMapper
+from .base import BaseOperator, StorageBase, SingleColumnMapper
 from .exceptions import ProcessingException
 import logging
 import importlib
 
 logger = logging.getLogger(__name__)
 
-__all__ = ['ColumnMapper']
+__all__ = ['ColumnMap']
 
 
-class ColumnMapper(BaseOperator):
+class ColumnMap(BaseOperator):
     """
     Class for applying transformations to columns
     """
@@ -21,17 +20,33 @@ class ColumnMapper(BaseOperator):
 
     def __init__(self,
                  task_id,
-                 column_mixins: Optional[List[DaskColumnMapper]] = None,
+                 column_mixins: Optional[List[SingleColumnMapper]] = None,
                  categorical_columns=None,
                  **kwargs):
         super().__init__(task_id, **kwargs)
-        self.column_mixins = column_mixins if column_mixins is not None else []
+        self._column_mixins = None
+        self.column_mixins = column_mixins
         self.categorical_columns = categorical_columns
+
+    @property
+    def column_mixins(self):
+        return self._column_mixins
+
+    @column_mixins.setter
+    def column_mixins(self, value):
+        self._column_mixins = value if value is not None else []
+        for cm in self._column_mixins:
+            if not isinstance(cm, SingleColumnMapper):
+                raise TypeError(
+                    "Error adding column mixins to {}. "
+                    "Expected {}; got {}".format(self,
+                                                 SingleColumnMapper.__name__,
+                                                 cm.__class__.__name__))
 
     def get_categorical_columns(self):
         return self.categorical_columns or []
 
-    def fit(self, params_storage: StorageBase, persist_storage: StorageBase, dataset: dd.DataFrame):
+    def fit(self, params_storage: StorageBase, persist_storage: StorageBase, dataset: dd.DataFrame, *args, **kwargs):
         params_storage['mixins'] = [{'module': mi.__module__,
                                      'class': mi.__class__.__name__}
                                     for mi in self.column_mixins]
