@@ -77,7 +77,7 @@ class PipelineBase:
             if task_id == 'input':
                 for ds_id, ds in enumerate(args):
                     inp_datasets[str(ds_id)] = ds
-                for ds_key, ds in enumerate(kwargs):
+                for ds_key, ds in kwargs.items():
                     inp_datasets[ds_key] = ds
             else:
                 input_num = 0
