@@ -4,10 +4,31 @@ import yaml
 
 import os
 import shutil
+import numpy as np
 
 import dask.dataframe as dd
+import importlib
 
-__all__ = ['read_file', 'dump_yaml', 'load_yaml', 'cleanup_empty_dirs', 'try_create_folder']
+__all__ = ['read_file', 'dump_yaml', 'load_yaml', 'cleanup_empty_dirs', 'try_create_folder', 'import_class', 'is_int']
+
+
+def is_int(x):
+    try:
+        if isinstance(x, float) or np.issubdtype(x, np.floating):
+            return x == int(x)
+        int(x)
+        return True
+    except (ValueError, TypeError, OverflowError):
+        return False
+
+
+def import_class(class_meta):
+    module_name = class_meta['module']
+    class_name = class_meta['class']
+    module = importlib.import_module(module_name)
+    module = importlib.reload(module)
+    cls = getattr(module, class_name)
+    return cls
 
 
 def try_create_folder(folder):
@@ -35,7 +56,10 @@ def dump_yaml(fname, meta: Union[list, dict]):
 
 def load_yaml(fname) -> Dict[Any, Any]:
     with open(fname, 'r') as f:
-        return yaml.load(f, Loader=yaml.FullLoader)
+        rv = yaml.load(f, Loader=yaml.FullLoader)
+        if rv is None:
+            return dict()
+        return rv
 
 
 def read_file(file):

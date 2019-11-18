@@ -8,10 +8,12 @@ import numpy as np
 import pandas as pd
 from dask import dataframe as dd
 
+import dask_pipes.base.columnmapper
+
 __all__ = ['StandardScaler', 'FillNa']
 
 
-class StandardScaler(dp.DaskColumnMapper):
+class StandardScaler(dask_pipes.base.columnmapper.DaskColumnMapper):
     """
     Used as pre-processing step to make column normally-distributed
     This usually makes training neural networks much easier
@@ -38,7 +40,7 @@ class StandardScaler(dp.DaskColumnMapper):
             raise dp.ProcessingException("Could not normalize column %s: no mean, std values" % column.name)
 
 
-class FillNa(dp.DaskColumnMapper):
+class FillNa(dask_pipes.base.columnmapper.DaskColumnMapper):
     """
     Fills Na values
     For numeric columns, computes median value
