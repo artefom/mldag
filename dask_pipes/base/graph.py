@@ -1,5 +1,6 @@
 from ..exceptions import DaskPipesException
 from typing import Optional, List
+import importlib
 
 __all__ = ['Graph', 'VertexBase', 'EdgeBase', 'VertexWidthFirst']
 
@@ -27,6 +28,13 @@ class VertexBase:
 
     def __hash__(self):
         return hash(self._id)
+
+    def to_dict(self) -> dict:
+        return {}
+
+    @classmethod
+    def from_dict(cls, d):
+        return VertexBase()
 
     @property
     def graph(self):
@@ -159,6 +167,15 @@ class EdgeBase:
             self.downstream = downstream
         if graph is not None:
             self.graph = graph
+
+    def to_dict(self):
+        return {'v1': self._v1._id, 'v2': self._v2._id}
+
+    @classmethod
+    def from_dict(clf, graph, d):
+        v1 = graph._vertices[d['v1']]
+        v2 = graph._vertices[d['v2']]
+        return EdgeBase(v1, v2)
 
     @property
     def graph(self):
@@ -338,7 +355,7 @@ class Graph:
 
         return self.remove_edge(self.get_edge(v1, v2))
 
-    def add_edge(self, edge: EdgeBase) -> EdgeBase:
+    def add_edge(self, edge: EdgeBase, edge_id=None) -> EdgeBase:
         """
         Add edge to graph
         edge must already have vertices assigned
@@ -357,9 +374,13 @@ class Graph:
                 return
         self.add_vertex(edge._v1)
         self.add_vertex(edge._v2)
-        edge._id = self._edge_id_counter
+        if edge_id is not None:
+            self._edge_id_counter = max(self._edge_id_counter, edge_id + 1)
+            edge._id = edge_id
+        else:
+            edge._id = self._edge_id_counter
+            self._edge_id_counter += 1
         edge._graph = self
-        self._edge_id_counter += 1
         self._edges[edge._id] = edge
         self._downstream_edges[edge._v1._id] = self._downstream_edges[edge._v1._id] + (edge._id,)
         self._upstream_edges[edge._v2._id] = self._upstream_edges[edge._v2._id] + (edge._id,)
@@ -413,7 +434,7 @@ class Graph:
         edge._v2 = None
         return edge
 
-    def add_vertex(self, vertex: VertexBase):
+    def add_vertex(self, vertex: VertexBase, vertex_id=None):
         """
         Add vertex to graph
         :param vertex: vertex to add
@@ -432,8 +453,12 @@ class Graph:
                     raise DaskPipesException("Vertex corrupted")
                 return
         vertex._graph = self
-        vertex._id = self._vertex_id_counter
-        self._vertex_id_counter += 1
+        if vertex_id is not None:
+            self._vertex_id_counter = max(self._vertex_id_counter, vertex_id + 1)
+            vertex._id = vertex_id
+        else:
+            vertex._id = self._vertex_id_counter
+            self._vertex_id_counter += 1
         self._vertices[vertex._id] = vertex
         self._downstream_edges[vertex._id] = tuple()
         self._upstream_edges[vertex._id] = tuple()
@@ -518,12 +543,90 @@ class Graph:
         return rv
 
     @property
-    def vertices(self):
+    def vertices(self) -> List[VertexBase]:
         return sorted(self._vertices.values(), key=lambda x: x._id)
 
     @property
-    def edges(self):
+    def edges(self) -> List[EdgeBase]:
         return sorted(self._edges.values(), key=lambda x: x._id)
 
     def __repr__(self):
         return "<{}(V={},E={})>".format(self.__class__.__name__, len(self.vertices), len(self.edges))
+
+    @staticmethod
+    def vertex_to_dict(vertex):
+        module_name = vertex.__module__
+        class_name = vertex.__class__.__name__
+        params = vertex.to_dict()
+        return {
+            'module': module_name,
+            'class': class_name,
+            'params': params
+        }
+
+    @staticmethod
+    def vertex_from_dict(d):
+        module_name = d['module']
+        class_name = d['class']
+        params = d['params']
+        cls = getattr(importlib.import_module(module_name), class_name)
+        if not issubclass(cls, VertexBase):
+            raise DaskPipesException("Expected {}; got {}".format(VertexBase.__name__, cls.__name__))
+        return cls.from_dict(params)
+
+    @staticmethod
+    def edge_to_dict(edge):
+        module_name = edge.__module__
+        class_name = edge.__class__.__name__
+        params = edge.to_dict()
+        return {
+            'module': module_name,
+            'class': class_name,
+            'params': params
+        }
+
+    @staticmethod
+    def edge_from_dict(graph, d):
+        module_name = d['module']
+        class_name = d['class']
+        params = d['params']
+        cls = getattr(importlib.import_module(module_name), class_name)
+        if not issubclass(cls, EdgeBase):
+            raise DaskPipesException("Expected {}; got {}".format(EdgeBase.__name__, cls.__name__))
+        return cls.from_dict(graph, params)
+
+    def to_dict(self):
+        vertices = {vertex._id: self.vertex_to_dict(vertex) for vertex in self.vertices}
+        edges = {edge._id: self.edge_to_dict(edge) for edge in self.edges}
+        module_name = self.__module__
+        class_name = self.__class__.__name__
+        return {
+            'module': module_name,
+            'class': class_name,
+            'vertices': vertices,
+            'edges': edges
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+
+        module_name = d['module']
+        class_name = d['class']
+
+        graph_cls = getattr(importlib.import_module(module_name), class_name)
+        if not issubclass(graph_cls, Graph):
+            raise DaskPipesException("Expected {}, got {}".format(Graph.__name__, graph_cls.__name__))
+
+        graph = graph_cls()
+
+        for k, v in d['vertices'].items():
+            vertex_id = int(k)
+            vertex = Graph.vertex_from_dict(v)
+            graph.add_vertex(vertex, vertex_id)
+
+        for k, v in d['edges'].items():
+            edge_id = int(k)
+            e = Graph.edge_from_dict(graph, v)
+            graph.add_edge(e, edge_id)
+
+        return graph
