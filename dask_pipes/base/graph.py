@@ -188,8 +188,7 @@ class EdgeBase:
 
         if self._v1 is None or self._v2 is None:
             raise DaskPipesException(
-                "Tried to assign {} with one or both NULL vertices to graph {}"
-                    .format(self, graph))
+                "Tried to assign {} with one or both NULL vertices to graph {}".format(self, graph))
         if self._graph is not None and graph is not None:
             if self._graph is graph:
                 return
