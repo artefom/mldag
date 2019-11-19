@@ -333,6 +333,16 @@ class Graph:
         self._vertex_id_counter = 0
         self._edge_id_counter = 0
 
+    def validate_vertex(self, vertex):
+        if not isinstance(vertex, VertexBase):
+            raise DaskPipesException(
+                "Expected {}; got {}".format(VertexBase.__class__.__name__, vertex.__class__.__name__))
+
+    def validate_edge(self, edge: EdgeBase):
+        if not isinstance(edge, EdgeBase):
+            raise DaskPipesException(
+                "Expected {}; got {}".format(EdgeBase.__class__.__name__, edge.__class__.__name__))
+
     def connect(self, v1: VertexBase, v2: VertexBase, *args, **kwargs) -> EdgeBase:
         """
         Connect two vertices together
@@ -361,6 +371,7 @@ class Graph:
         :param edge: edge to add
         :return: added edge
         """
+        self.validate_edge(edge)
         if edge._graph is not None:
             if edge._graph is not self:
                 raise DaskPipesException(
@@ -370,7 +381,7 @@ class Graph:
                 if edge._v1._graph is not self or edge._v2._graph is not self:
                     raise DaskPipesException(
                         "Edge already belongs to graph, but vertices ({}), ({}) do not".format(edge._v1, edge._v2))
-                return
+                return edge
         self.add_vertex(edge._v1)
         self.add_vertex(edge._v2)
         if edge_id is not None:
@@ -416,9 +427,7 @@ class Graph:
         :param edge: edge to remove (can be obtained with get_edge)
         :return: removed edge
         """
-        if not isinstance(edge, EdgeBase):
-            raise DaskPipesException(
-                "Expected {}; got {}".format(EdgeBase.__class__.__name__, edge.__class__.__name__))
+        self.validate_edge(edge)
         if edge._graph is not self:
             raise DaskPipesException(
                 "Tried to remove edge ({}) that does not belong to current graph ({})".format(edge, self))
@@ -439,9 +448,7 @@ class Graph:
         :param vertex: vertex to add
         :return: added vertex
         """
-        if not isinstance(vertex, VertexBase):
-            raise DaskPipesException(
-                "Expected {}; got {}".format(VertexBase.__class__.__name__, vertex.__class__.__name__))
+        self.validate_vertex(vertex)
         if vertex._graph is not None:
             if vertex._graph is not self:
                 raise DaskPipesException(
@@ -469,9 +476,7 @@ class Graph:
         :param vertex: vertex to remove
         :return: removed vertex
         """
-        if not isinstance(vertex, VertexBase):
-            raise DaskPipesException(
-                "Expected {}; got {}".format(VertexBase.__class__.__name__, vertex.__class__.__name__))
+        self.validate_vertex(vertex)
         for edge_id in self._downstream_edges[vertex._id]:
             self.remove_edge(self._edges[edge_id])
         for edge_id in self._upstream_edges[vertex._id]:
@@ -490,9 +495,7 @@ class Graph:
         :param vertex: vertex to get relatives of
         :return: List[VertexBase] - upstream vertices
         """
-        if not isinstance(vertex, VertexBase):
-            raise DaskPipesException(
-                "Expected {}; got {}".format(VertexBase.__class__.__name__, vertex.__class__.__name__))
+        self.validate_vertex(vertex)
         if vertex.graph is not self:
             raise DaskPipesException(
                 "Tried to get upstream vertices of vertex ({}) "
@@ -508,9 +511,7 @@ class Graph:
         :param vertex: vertex to get relatives of
         :return: List[VertexBase] - downstream vertices
         """
-        if not isinstance(vertex, VertexBase):
-            raise DaskPipesException(
-                "Expected {}; got {}".format(VertexBase.__class__.__name__, vertex.__class__.__name__))
+        self.validate_vertex(vertex)
         if vertex.graph is not self:
             raise DaskPipesException(
                 "Tried to get downstream vertices of vertex ({}) "
