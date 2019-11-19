@@ -34,7 +34,7 @@ class VertexBase:
 
     @classmethod
     def from_dict(cls, d):
-        return VertexBase()
+        return cls()
 
     @property
     def graph(self):
@@ -42,8 +42,9 @@ class VertexBase:
 
     @graph.setter
     def graph(self, graph):
-        if graph is not None and not isinstance(graph, Graph):
-            raise DaskPipesException("Expected {}; received {}".format(Graph.__name__, graph.__class__.__name__))
+        if graph is not None and not issubclass(graph.__class__, Graph):
+            raise DaskPipesException(
+                "Expected subclass of {}; received {}".format(Graph.__name__, graph.__class__.__name__))
         if self._graph is not None:
             self._graph.remove_vertex(self)
         self._id = None
@@ -64,8 +65,9 @@ class VertexBase:
         :param upstream: direction of connections upstream: other -> this; downstream: this -> other
         :return:
         """
-        if not isinstance(other, VertexBase):
-            raise DaskPipesException("Expected {}; got {}".format(VertexBase.__name__, other.__class__.__name__))
+        if not issubclass(other.__class__, VertexBase):
+            raise DaskPipesException(
+                "Expected subclass of {}; got {}".format(VertexBase.__name__, other.__class__.__name__))
         if self.graph is not None and other.graph is not None:
             if self.graph is not other.graph:
                 raise DaskPipesException(
@@ -92,8 +94,9 @@ class VertexBase:
         :raises: DaskPipesException if two vertices are already disconnected
         :return:
         """
-        if not isinstance(other, VertexBase):
-            raise DaskPipesException("Expected {}; got {}".format(VertexBase.__name__, other.__class__.__name__))
+        if not issubclass(other.__class__, VertexBase):
+            raise DaskPipesException(
+                "Expected subclass of {}; got {}".format(VertexBase.__name__, other.__class__.__name__))
 
         if upstream:
             self.graph.disconnect(other, self)
@@ -172,10 +175,15 @@ class EdgeBase:
         return {'v1': self._v1._id, 'v2': self._v2._id}
 
     @classmethod
-    def from_dict(clf, graph, d):
+    def params_from_dict(cls, graph, d):
         v1 = graph._vertices[d['v1']]
         v2 = graph._vertices[d['v2']]
-        return EdgeBase(v1, v2)
+        return (v1, v2), {}
+
+    @classmethod
+    def from_dict(cls, graph, d):
+        args, kwargs = cls.params_from_dict(graph, d)
+        return cls(*args, **kwargs)
 
     @property
     def graph(self):
@@ -183,8 +191,9 @@ class EdgeBase:
 
     @graph.setter
     def graph(self, graph):
-        if graph is not None and not isinstance(graph, Graph):
-            raise DaskPipesException("Expected {}; got {}".format(Graph.__name__, graph.__class__.__name__))
+        if graph is not None and not issubclass(graph.__class__, Graph):
+            raise DaskPipesException(
+                "Expected subclass of {}; got {}".format(Graph.__name__, graph.__class__.__name__))
 
         if self._v1 is None or self._v2 is None:
             raise DaskPipesException(
@@ -236,8 +245,9 @@ class EdgeBase:
         :type vertex: VertexBase
         :return:
         """
-        if vertex is not None and not isinstance(vertex, VertexBase):
-            raise DaskPipesException("Expected {}; got {}".format(VertexBase.__name__, vertex.__class__.__name__))
+        if vertex is not None and not issubclass(vertex.__class__, VertexBase):
+            raise DaskPipesException(
+                "Expected subclass of {}; got {}".format(VertexBase.__name__, vertex.__class__.__name__))
 
         if self._graph is not None:
             if vertex is None:
@@ -259,8 +269,9 @@ class EdgeBase:
         :type  vertex: VertexBase
         :return:
         """
-        if vertex is not None and not isinstance(vertex, VertexBase):
-            raise DaskPipesException("Expected {}; got {}".format(VertexBase.__name__, vertex.__class__.__name__))
+        if vertex is not None and not issubclass(vertex.__class__, VertexBase):
+            raise DaskPipesException(
+                "Expected subclass of {}; got {}".format(VertexBase.__name__, vertex.__class__.__name__))
 
         if self._graph is not None:
             self._graph.remove_edge(self)
@@ -334,14 +345,17 @@ class Graph:
         self._edge_id_counter = 0
 
     def validate_vertex(self, vertex):
-        if not isinstance(vertex, VertexBase):
+        if not issubclass(vertex.__class__, VertexBase):
             raise DaskPipesException(
-                "Expected {}; got {}".format(VertexBase.__class__.__name__, vertex.__class__.__name__))
+                "Expected subclass of {}; got {}".format(VertexBase.__class__.__name__, vertex.__class__.__name__))
 
     def validate_edge(self, edge: EdgeBase):
-        if not isinstance(edge, EdgeBase):
+        if not issubclass(edge.__class__, EdgeBase):
             raise DaskPipesException(
-                "Expected {}; got {}".format(EdgeBase.__class__.__name__, edge.__class__.__name__))
+                "Expected subclass of {}; got {}".format(EdgeBase.__class__.__name__, edge.__class__.__name__))
+
+    def get_default_edge(self, *args, **kwargs):
+        return EdgeBase(*args, **kwargs)
 
     def connect(self, v1: VertexBase, v2: VertexBase, *args, **kwargs) -> EdgeBase:
         """
@@ -352,7 +366,10 @@ class Graph:
         :param kwargs: params passed to edge
         :return: created edge
         """
-        return self.add_edge(EdgeBase(v1, v2))
+        edge = self.get_default_edge(*args, **kwargs)
+        edge.upstream = v1
+        edge.downstream = v2
+        return self.add_edge(edge)
 
     def disconnect(self, v1: VertexBase, v2: VertexBase) -> EdgeBase:
         """
@@ -396,6 +413,20 @@ class Graph:
         self._upstream_edges[edge._v2._id] = self._upstream_edges[edge._v2._id] + (edge._id,)
         return edge
 
+    def get_edges(self, v1: VertexBase, v2: VertexBase) -> List[EdgeBase]:
+        self.validate_vertex(v1)
+        self.validate_vertex(v2)
+        if v1._graph is not self or v2._graph is not self:
+            raise DaskPipesException(
+                "Tried to get edge between vertices ({}), ({}) "
+                "that do not belong to current graph ({})".format(v1, v2, self))
+        rv = [self._edges[i] for i in self._downstream_edges[v1._id]
+              if self._edges[i].downstream._id == v2._id]
+        if len(rv) == 0:
+            raise DaskPipesException(
+                "Edge ({}), ({}) does not exist".format(v1, v2))
+        return rv
+
     def get_edge(self, v1: VertexBase, v2: VertexBase) -> EdgeBase:
         """
         Get edge by vertex
@@ -404,12 +435,8 @@ class Graph:
         :raises: DaskPipesException if edge not found
         :return: found edge
         """
-        if not isinstance(v1, VertexBase):
-            raise DaskPipesException(
-                "Expected {}; got {}".format(VertexBase.__class__.__name__, v1.__class__.__name__))
-        if not isinstance(v2, VertexBase):
-            raise DaskPipesException(
-                "Expected {}; got {}".format(VertexBase.__class__.__name__, v2.__class__.__name__))
+        self.validate_vertex(v1)
+        self.validate_vertex(v2)
         if v1._graph is not self or v2._graph is not self:
             raise DaskPipesException(
                 "Tried to get edge between vertices ({}), ({}) "
@@ -571,7 +598,7 @@ class Graph:
         params = d['params']
         cls = getattr(importlib.import_module(module_name), class_name)
         if not issubclass(cls, VertexBase):
-            raise DaskPipesException("Expected {}; got {}".format(VertexBase.__name__, cls.__name__))
+            raise DaskPipesException("Expected subclass of {}; got {}".format(VertexBase.__name__, cls.__name__))
         return cls.from_dict(params)
 
     @staticmethod
@@ -592,10 +619,14 @@ class Graph:
         params = d['params']
         cls = getattr(importlib.import_module(module_name), class_name)
         if not issubclass(cls, EdgeBase):
-            raise DaskPipesException("Expected {}; got {}".format(EdgeBase.__name__, cls.__name__))
+            raise DaskPipesException("Expected subclass of {}; got {}".format(EdgeBase.__name__, cls.__name__))
         return cls.from_dict(graph, params)
 
     def to_dict(self):
+        """
+        Dump pipeline to dictionary
+        :return:
+        """
         vertices = {vertex._id: self.vertex_to_dict(vertex) for vertex in self.vertices}
         edges = {edge._id: self.edge_to_dict(edge) for edge in self.edges}
         module_name = self.__module__
@@ -609,13 +640,18 @@ class Graph:
 
     @classmethod
     def from_dict(cls, d):
+        """
+        Deserialize pipeline from dictionary
+        :param d:
+        :return:
+        """
 
         module_name = d['module']
         class_name = d['class']
 
         graph_cls = getattr(importlib.import_module(module_name), class_name)
         if not issubclass(graph_cls, Graph):
-            raise DaskPipesException("Expected {}, got {}".format(Graph.__name__, graph_cls.__name__))
+            raise DaskPipesException("Expected subclass of {}, got {}".format(Graph.__name__, graph_cls.__name__))
 
         graph = graph_cls()
 
