@@ -5,11 +5,18 @@ import inspect
 
 __all__ = ['OperatorConnection', 'OperatorBase', 'Pipeline', 'OperatorBaseMeta', 'ExampleOperator']
 
+SLOT_UNNAMED = '<unnamed>'
+SLOT_ANY = '<any>'
+
 
 class OperatorConnection(EdgeBase):
 
-    def __init__(self, *args, upstream_slot=None, downstream_slot=None, **kwargs):
+    def __init__(self, *args, upstream_slot=SLOT_UNNAMED, downstream_slot=SLOT_ANY, **kwargs):
         super().__init__(*args, **kwargs)
+        if not isinstance(upstream_slot, str):
+            raise DaskPipesException("upstream slot must be str, got {}".format(upstream_slot.__class__.__name__))
+        if not isinstance(upstream_slot, str):
+            raise DaskPipesException("downstream slot must be str, got {}".format(downstream_slot.__class__.__name__))
         self.upstream_slot = upstream_slot
         self.downstream_slot = downstream_slot
 
@@ -57,7 +64,7 @@ class OperatorBaseMeta(type):
         elif isinstance(return_type, str):
             return [(return_type, object)]
         else:
-            return [(None, return_type)]
+            return [(SLOT_UNNAMED, return_type)]
 
     @staticmethod
     def get_inputs(func, skip_first=1):
@@ -79,8 +86,6 @@ class OperatorBaseMeta(type):
         return fit_wrapped
 
     def __new__(mcs, name, bases, attrs):
-        global transform_test
-        """If the class has a 'run' method, wrap it"""
         if 'fit' in attrs:
             # Infer inputs and outputs prior to wrapping method
             attrs['inputs'] = OperatorBaseMeta.get_inputs(attrs['fit'])
@@ -173,7 +178,7 @@ class Pipeline(Graph):
         if len(args) > 1:
             raise DaskPipesException("More than one positional dataset not supported")
         elif len(args) == 1:
-            params[None] = args[0]
+            params[SLOT_ANY] = args[0]
 
         previous_outputs = dict()
         output_nodes = list()
@@ -195,10 +200,10 @@ class Pipeline(Graph):
             if len(downstream_vertices) == 0:
                 output_nodes.append(operator)
 
+            # TODO: Simplify
             if len(upstream_vertices) > 0:
                 for upstream_vertex in upstream_vertices:
                     v_outputs = previous_outputs[upstream_vertex]
-                    print(v_outputs)
                     edges: List[OperatorConnection] = self.get_edges(upstream_vertex, operator)
                     slot_mapping = dict()
                     for edge in edges:
@@ -209,36 +214,58 @@ class Pipeline(Graph):
                         try:
                             downstream_slot = slot_mapping[upstream_slot]
                         except KeyError:
-                            expected_outputs = [{None: '<positional>'}.get(i, i) for i in slot_mapping.keys()]
+                            expected_outputs = list(slot_mapping.keys())
                             raise DaskPipesException(
                                 "{} contains unknown output {}, avaliable: {}".format(
                                     operator, repr(upstream_slot), repr(expected_outputs))) from None
                         if downstream_slot not in operator_input_names:
-                            if downstream_slot is None:
-                                raise DaskPipesException(
-                                    "{} does not have positional input".format(operator))
+                            if downstream_slot == SLOT_ANY:
+                                if len(operator_input_names) > 1:
+                                    raise DaskPipesException(
+                                        "{upstream_operator} tried to pass {upstream_slot} to "
+                                        "{downstream_slot} slot of {downstream_operator}, "
+                                        "which has {n_downstream_inputs} ({operator_input_names}) available slots. "
+                                        "Piping to {downstream_slot} is only allowed to {operator_type} "
+                                        "with single input".format(
+                                            upstream_operator=upstream_vertex,
+                                            downstream_operator=operator,
+                                            upstream_slot=upstream_slot,
+                                            downstream_slot=downstream_slot,
+                                            n_downstream_inputs=len(operator_input_names),
+                                            operator_input_names=operator_input_names,
+                                            operator_type=operator.__class__.__name__
+                                        )
+                                    )
+                                else:
+                                    downstream_slot = operator_input_names[0]
                             else:
                                 raise DaskPipesException(
                                     "{} does not have input '{}'".format(operator, downstream_slot))
                         if downstream_slot in input_dict:
-                            if downstream_slot is None:
-                                raise DaskPipesException(
-                                    "Duplicate input for positional argument of {}".format(operator))
-                            else:
-                                raise DaskPipesException(
-                                    "Duplicate input for slot '{}' of {}".format(k, operator))
+                            raise DaskPipesException(
+                                "Duplicate input for slot '{}' of {}".format(downstream_slot, operator))
                         else:
                             input_dict[downstream_slot] = v
             else:
                 # Input vertex, assign from input
-                input_dict = params
-
-            args = tuple() if None not in input_dict else (input_dict[None],)
-            kwargs = {k: v for k, v in input_dict.items() if k is not None}
-
+                input_dict = dict()
+                for k, v in params.items():
+                    if k not in operator_input_names:
+                        if k == SLOT_ANY:
+                            if len(operator_input_names) == 1:
+                                k = operator_input_names[0]
+                            else:
+                                raise DaskPipesException(
+                                    "Input node {} has multiple inputs {}, "
+                                    "specify".format(operator, operator_input_names))
+                        else:
+                            raise DaskPipesException("Unknown input name: {}".format(k))
+                    input_dict[k] = v
+            args = tuple()
+            kwargs = {k: v for k, v in input_dict.items()}
             operator.fit(*args, **kwargs)
-            params = None
-            outputs = operator.transform(params, *args, **kwargs)
+            params2 = None
+            outputs = operator.transform(params2, *args, **kwargs)
 
             if not isinstance(outputs, list) and not isinstance(outputs, dict) and not isinstance(outputs, tuple):
                 outputs = (outputs,)
