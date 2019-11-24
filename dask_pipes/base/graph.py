@@ -435,6 +435,7 @@ class Graph:
         :raises: DaskPipesException if edge not found
         :return: found edge
         """
+        # TODO: REMOVE
         self.validate_vertex(v1)
         self.validate_vertex(v2)
         if v1._graph is not self or v2._graph is not self:

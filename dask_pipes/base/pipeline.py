@@ -73,6 +73,25 @@ class OperatorConnection(EdgeBase):
 
 class OperatorBaseMeta(type):
 
+    @property
+    def outputs(self) -> List[ReturnDescription]:
+        """
+        Outputs of an operator (parses annotation of .transform function)
+        :return:
+        """
+        ret_descr = get_return_description(self.transform)
+        return ret_descr
+
+    @property
+    def inputs(self) -> List[ArgumentDescription]:
+        """
+        Inputs of an operator - parameters of self.fit function
+        must be equal to parameters of self.transform
+        :return:
+        """
+        arg_descr = get_arguments_description(self.fit)
+        return arg_descr
+
     @staticmethod
     def wrap_fit(func):
         """Return a wrapped instance method"""
@@ -102,19 +121,17 @@ class OperatorBaseMeta(type):
 
 class OperatorBase(VertexBase, metaclass=OperatorBaseMeta):
 
+    @property
+    def inputs(self) -> List[ArgumentDescription]:
+        return self.__class__.inputs
+
+    @property
+    def outputs(self) -> List[ReturnDescription]:
+        return self.__class__.outputs
+
     @staticmethod
     def validate(operator):
         assert_subclass(operator, OperatorBase)
-
-    @property
-    def outputs(self):
-        ret_descr = get_return_description(self.fit)
-        return ret_descr
-
-    @property
-    def inputs(self):
-        arg_descr = get_arguments_description(self.fit)
-        return arg_descr
 
     def set_upstream(self, other,
                      upstream_slot: Optional[str] = None,
@@ -140,12 +157,18 @@ class OperatorBase(VertexBase, metaclass=OperatorBaseMeta):
         """
         super().set_downstream(other, upstream_slot=upstream_slot, downstream_slot=downstream_slot)
 
-    def fit(self, *args, **kwargs):
+    def fit(self, *args, **kwargs) -> Dict[str, Any]:
         """
         Infer parameters prior to transforming dataset
+
+        Important!
+        Reason behind returning dict instead of storing fitted data inside operator:
+        1. One operator can be fitted multiple time in one pipeline
+        2. Do not use pickle to save model parameters. instead, serialize them explicitly to yaml or csv files
+
         :param args:
         :param kwargs:
-        :return:
+        :return: Dictionary of parameters to use in transform
         """
         raise NotImplementedError()
 
@@ -165,13 +188,15 @@ inspect.Signature()
 
 class ExampleOperator(OperatorBase):
 
-    def fit(self, dataset: "Descr"):
+    def fit(self, dataset) -> Dict[str, Any]:
         """Some docstring"""
-        return dataset
+        print("Fittin {}".format(self))
+        return {'a': 1}
 
     @classmethod
-    def transform(cls, params, dataset: "Descr"):
+    def transform(cls, params, dataset):
         """Some docstring"""
+        print("Transformin {}".format(cls.__name__))
         return dataset
 
 
@@ -290,13 +315,109 @@ class Pipeline(Graph):
         super().add_edge(edge, edge_id=edge_id)
         return edge
 
+    def _parse_arguments(self, *args, **kwargs) -> Dict[str, Any]:
+
+        expected_inputs = {i.arg_name for i in self.inputs}
+        unseen_inputs = {i for i in expected_inputs}
+
+        rv = {k: v for k, v in kwargs.items()}
+
+        if len(args) > 0:
+            if len(args) > 1:
+                raise DaskPipesException("Multiple positional arguments not allowed")
+            if len(rv) > 0:
+                raise DaskPipesException("Cannot mix positional and key-word arguments")
+            if len(expected_inputs) > 1:
+                raise DaskPipesException(
+                    "Positional arguments not allowed in case of multiple inputs needed. "
+                    "Expected {} key-word arguments; got {} positional".format(len(expected_inputs),
+                                                                               len(args)))
+            rv[next(iter(expected_inputs))] = next(iter(args))
+
+        for k, v in rv.items():
+            if k not in expected_inputs:
+                raise DaskPipesException(
+                    "Unexpected argument: '{}'. Should be one of {}".format(
+                        k, expected_inputs
+                    ))
+            unseen_inputs.remove(k)
+
+        if len(unseen_inputs) > 0:
+            raise DaskPipesException("Unfilled arguments: {}".format(unseen_inputs))
+
+        return rv
+
+    @staticmethod
+    def _parse_operator_output(operator_cls, output):
+        expected_result: List[ReturnDescription] = operator_cls.outputs
+        expected_keys = [i.name for i in expected_result]
+        if not isinstance(output, list) and not isinstance(output, tuple) and not isinstance(output, dict):
+            output = (output,)
+
+        if isinstance(output, list) or isinstance(output, tuple):  # In case returned list
+            # Check that output length matches
+            if len(output) != len(expected_result):
+                raise DaskPipesException(
+                    "{}.transform result length does not match expected. Expected {}, got {}".format(
+                        operator_cls.__name__,
+                        ['{}: {}'.format(i.name, i.type) for i in expected_result],
+                        [i.__class__.__name__ for i in output]
+                    ))
+            output = {k: v for k, v in zip(expected_keys, output)}
+        elif isinstance(output, dict):  # In case returned dict
+            got_keys = set(output.keys())
+            # Check that keys match
+            if set(expected_keys) != got_keys:
+                raise DaskPipesException(
+                    "{}.transform result does not match expected. Expected keys: {}, received: {}".format(
+                        operator_cls.__name__,
+                        expected_keys, got_keys
+                    ))
+        else:
+            raise DaskPipesException("Unknown return type: {}".format(output.__class__.__name__))
+
+        return output
+
     def fit(self, *args, **kwargs):
         """
         Main method for fitting pipeline. Sequentially calls fit_transform of child operators
         """
-        print("Imma fitting!")
-        print(args)
-        print(kwargs)
+        args = self._parse_arguments(*args, **kwargs)
+        operator_arguments = {op: dict() for op in self.vertices}
+        for inp in self.inputs:
+            operator_arguments[inp.downstream_operator][inp.downstream_slot] = args[inp.arg_name]
+
+        for op in VertexWidthFirst(self):
+            op: OperatorBase
+            op_args = operator_arguments[op]
+
+            # ----------------------
+            # Fit operator
+            # ----------------------
+            params = op.fit(**op_args)
+
+            # ----------------------
+            # Save fitted parameters
+            # ----------------------
+            # TODO: Save params for future use
+
+            # ----------------------
+            # Transform operator
+            # ----------------------
+            op_result = Pipeline._parse_operator_output(op.__class__,
+                                                        op.__class__.transform(params, **op_args))
+
+            # Get downstream edges
+            for downstream_op in self.get_downstream_vertices(op):
+                edges = self.get_edges(op, downstream_op)
+                for edge in edges:
+                    edge: OperatorConnection
+                    if edge.downstream_slot in operator_arguments[downstream_op]:
+                        raise DaskPipesException(
+                            "Duplicate argument for {}['{}']. "
+                            "Already contains {}".format(downstream_op, edge.downstream_slot,
+                                                         operator_arguments[downstream_op][edge.downstream_slot]))
+                    operator_arguments[downstream_op][edge.downstream_slot] = op_result[edge.upstream_slot]
 
     def transform(self, *args, **kwargs):
         """
