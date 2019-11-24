@@ -121,6 +121,10 @@ class OperatorBaseMeta(type):
 
 class OperatorBase(VertexBase, metaclass=OperatorBaseMeta):
 
+    def __init__(self, name):
+        super().__init__()
+        self.name = name
+
     @property
     def inputs(self) -> List[ArgumentDescription]:
         return self.__class__.inputs
@@ -182,6 +186,9 @@ class OperatorBase(VertexBase, metaclass=OperatorBaseMeta):
         """
         raise NotImplementedError()
 
+    def __repr__(self):
+        return '<{}: {}>'.format(self.__class__.__name__, self.name)
+
 
 inspect.Signature()
 
@@ -204,13 +211,78 @@ class Pipeline(Graph):
 
     def __init__(self):
         super().__init__()
-        self.inputs: List[PipelineInput] = list()
+
+        # Pipeline inputs. use set_input to add input
+        self._inputs: List[PipelineInput] = list()
+
+        self.operator_dict = dict()
+
+    def add_vertex(self, vertex: OperatorBase, vertex_id=None):
+        if vertex.name in self.operator_dict:
+            if self.operator_dict[vertex.name] is not vertex:
+                raise DaskPipesException("Duplicate name for operator {}".format(vertex))
+        self.operator_dict[vertex.name] = vertex
+        super().add_vertex(vertex, vertex_id=vertex_id)
+
+    def remove_vertex(self, vertex) -> VertexBase:
+        if vertex.name in self.operator_dict:
+            if self.operator_dict[vertex.name] is not vertex:
+                raise ValueError("Vertex does not equal to operator_dict['{}']".format(vertex.name))
+            del self.operator_dict[vertex.name]
+        else:
+            raise ValueError("Invalid vertex name")
+        self.remove_input(vertex)
+        return super().remove_vertex(vertex)
 
     def validate_edge(self, edge):
         OperatorConnection.validate(edge)
 
     def validate_vertex(self, vertex):
         OperatorBase.validate(vertex)
+
+    def dump_params(self, vertex_name: str, run_name: str, params: Dict[str, Any]):
+        raise NotImplementedError()
+
+    def dump_outputs(self, vertex_name: str, run_name: str, outputs: Dict[str, Any]):
+        raise NotImplementedError()
+
+    def load_params(self, vertex_name: str, run_name: str):
+        raise NotImplementedError()
+
+    def load_outputs(self, vertex_name: str, run_name: str):
+        raise NotImplementedError()
+
+    def remove_input(self, operator: OperatorBase):
+        # Find inputs to remove
+        self._inputs = [i for i in self._inputs if i.downstream_operator is not operator]
+        self.update_fit_transform_signatures()
+
+    def update_fit_transform_signatures(self):
+        fit_func = self.fit.__func__
+        transform_func = self.transform.__func__
+        sign = inspect.signature(fit_func)
+        self_param = next(iter(sign.parameters.values()))
+        new_params = [self_param]
+        seen_params = set()
+
+        for inp in self._inputs:
+            if inp.arg_name in seen_params:
+                continue
+            param = inspect.Parameter(
+                name=inp.arg_name,
+                kind=inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                annotation=inspect._empty,
+                default=None)
+            new_params.append(param)
+            seen_params.add(inp.arg_name)
+
+        fit_func.__signature__ = inspect.Signature(
+            parameters=new_params,
+            return_annotation=sign.return_annotation)
+
+        transform_func.__signature__ = inspect.Signature(
+            parameters=new_params,
+            return_annotation=sign.return_annotation)
 
     def set_input(self, operator: OperatorBase, suffix=None):
 
@@ -231,54 +303,12 @@ class Pipeline(Graph):
 
             arg_name = '{}{}'.format(downstream_slot, suffix)
 
-            self.inputs.append(PipelineInput(arg_name=arg_name,
-                                             downstream_slot=downstream_slot,
-                                             downstream_operator=operator))
+            self._inputs.append(PipelineInput(arg_name=arg_name,
+                                              downstream_slot=downstream_slot,
+                                              downstream_operator=operator))
         operator.graph = self
 
-        fit_func = self.fit.__func__
-        transform_func = self.transform.__func__
-        sign = inspect.signature(fit_func)
-
-        # Construct new fit parameters
-        old_params = [i for i in sign.parameters.values()
-                      if not i.kind == inspect.Parameter.VAR_KEYWORD and
-                      not i.kind == inspect.Parameter.VAR_POSITIONAL]
-        additional_params = list()
-        # Create additional parameters
-        for arg_descr in operator.inputs:
-            arg_descr: ArgumentDescription
-            annot = arg_descr.type
-            if annot == object:
-                annot = inspect._empty
-            new_param = inspect.Parameter(
-                name=arg_descr.name,
-                kind=inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                annotation=annot,
-                default=None
-            )
-            dup_param = None
-            dup_params = [i for i in old_params if i.name == new_param.name]
-            if len(dup_params) > 0:
-                dup_param = dup_params[0]
-
-            if dup_param is not None:
-                # TODO: update annotation if necessary
-                pass
-            else:
-                additional_params.append(new_param)
-
-        # TODO: construct docstring for fit and tranform
-
-        new_params = old_params + additional_params
-
-        fit_func.__signature__ = inspect.Signature(
-            parameters=new_params,
-            return_annotation=sign.return_annotation)
-
-        transform_func.__signature__ = inspect.Signature(
-            parameters=new_params,
-            return_annotation=sign.return_annotation)
+        self.update_fit_transform_signatures()
 
     def connect(self,
                 upstream: OperatorBase,
@@ -317,7 +347,7 @@ class Pipeline(Graph):
 
     def _parse_arguments(self, *args, **kwargs) -> Dict[str, Any]:
 
-        expected_inputs = {i.arg_name for i in self.inputs}
+        expected_inputs = {i.arg_name for i in self._inputs}
         unseen_inputs = {i for i in expected_inputs}
 
         rv = {k: v for k, v in kwargs.items()}
@@ -384,12 +414,14 @@ class Pipeline(Graph):
         """
         args = self._parse_arguments(*args, **kwargs)
         operator_arguments = {op: dict() for op in self.vertices}
-        for inp in self.inputs:
+        for inp in self._inputs:
             operator_arguments[inp.downstream_operator][inp.downstream_slot] = args[inp.arg_name]
 
         for op in VertexWidthFirst(self):
             op: OperatorBase
             op_args = operator_arguments[op]
+            if len(op_args) == 0:
+                raise DaskPipesException("No input for operator {}".format(op))
 
             # ----------------------
             # Fit operator

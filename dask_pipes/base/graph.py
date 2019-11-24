@@ -52,6 +52,8 @@ class VertexBase:
         if graph is not None:
             Graph.validate(graph)
         if self._graph is not None:
+            if self._graph == graph:
+                return
             self._graph.remove_vertex(self)
         self._id = None
         self._graph = None
