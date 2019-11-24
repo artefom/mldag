@@ -1,15 +1,72 @@
-from typing import Union, Dict, Any
-
+from typing import Union, Dict, Any, Callable, List
+from collections import namedtuple
 import yaml
 
 import os
 import shutil
 import numpy as np
+import inspect
 
 import dask.dataframe as dd
 import importlib
+from .exceptions import *
 
-__all__ = ['read_file', 'dump_yaml', 'load_yaml', 'cleanup_empty_dirs', 'try_create_folder', 'import_class', 'is_int']
+__all__ = ['read_file', 'dump_yaml', 'load_yaml', 'cleanup_empty_dirs', 'try_create_folder', 'import_class', 'is_int',
+           'assert_subclass', 'get_arguments_description', 'get_return_description', 'ArgumentDescription',
+           'ReturnDescription']
+
+VALIDATE_SUBCLASSES = False
+
+ArgumentDescription = namedtuple("ArgumentDescription", ['name', 'type', 'description'])
+ReturnDescription = namedtuple("ArgumentDescription", ['name', 'type', 'description'])
+
+RETURN_UNNAMED = '<unnamed>'
+
+
+def get_arguments_description(func: Callable, skip_first=1) -> List[ArgumentDescription]:
+    fullargspec = inspect.getfullargspec(func)
+    argspec = fullargspec.args[skip_first:]
+    annotations = func.__annotations__
+    rv = [ArgumentDescription(name=k, type=annotations.get(k, object), description=None) for k in argspec]
+    return rv
+
+
+def get_return_description(func: Callable) -> List[ReturnDescription]:
+    func_name = func.__qualname__
+    return_type = func.__annotations__.get('return', Any)
+    if isinstance(return_type, tuple) or isinstance(return_type, list):
+        if len(return_type) == 0:
+            raise DaskPipesException("return type '{}' of {} not understood".format(repr(return_type), func_name))
+        rv = list()
+        for v in return_type:
+            if isinstance(v, tuple) or isinstance(v, list):
+                if len(v) != 2:
+                    raise NotImplementedError()
+                var_name = v[0]
+                var_type = v[1]
+            elif isinstance(v, str):
+                var_name = v[0]
+                var_type = object
+            else:
+                raise NotImplementedError()
+            if var_name in set((i[0] for i in rv)):
+                raise DaskPipesException("duplicate return name: {} of {}".format(var_name, func_name))
+            rv.append(ArgumentDescription(name=var_name, type=var_type, description=None))
+        return rv
+    elif isinstance(return_type, dict):
+        return [ReturnDescription(name=k, type=v, description=None) for k, v in return_type.items()]
+    elif isinstance(return_type, str):
+        return [ReturnDescription(name=return_type, type=object, description=None)]
+    else:
+        return [ReturnDescription(name=RETURN_UNNAMED, type=return_type, description=None)]
+
+
+def assert_subclass(obj, cls):
+    if VALIDATE_SUBCLASSES:
+        if not issubclass(obj.__class__, cls):
+            raise DaskPipesException(
+                "Expected subclass of {}; got {}".format(cls.__name__,
+                                                         obj.__class__.__name__))
 
 
 def is_int(x):
