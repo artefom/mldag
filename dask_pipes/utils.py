@@ -9,7 +9,7 @@ import inspect
 
 import dask.dataframe as dd
 import importlib
-from .exceptions import *
+from .exceptions import DaskPipesException
 
 __all__ = ['read_file', 'dump_yaml', 'load_yaml', 'cleanup_empty_dirs', 'try_create_dir', 'import_class', 'is_int',
            'assert_subclass', 'get_arguments_description', 'get_return_description', 'ArgumentDescription',

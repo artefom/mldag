@@ -5,7 +5,7 @@ import pytest
 import os
 
 import dask_pipes as dp
-from dask_pipes.exceptions import *
+from dask_pipes.exceptions import DaskPipesException
 
 ds1 = pd.DataFrame([['cat5', -0.08791349765766582, 1],
                     ['cat2', -0.45607955436914216, np.nan],

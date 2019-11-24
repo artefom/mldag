@@ -1,7 +1,7 @@
 from ..exceptions import DaskPipesException
 from typing import Optional, List
 import importlib
-from ..utils import *
+from ..utils import assert_subclass
 
 __all__ = ['Graph', 'VertexBase', 'EdgeBase', 'VertexWidthFirst']
 
@@ -14,10 +14,6 @@ class VertexBase:
     """
 
     def __init__(self):
-        """
-        :param graph: If passed, current vertex assigned to graph
-        :type graph: Graph
-        """
         self._graph = None  # type: Optional[Graph]
         self._id = None  # type: Optional[int]
 
@@ -177,7 +173,6 @@ class EdgeBase:
     @staticmethod
     def validate(edge):
         """
-        :param self:
         :param edge:
         :type edge: EdgeBase
         :return:
@@ -382,6 +377,18 @@ class Graph:
         :return: removed edge
         """
         return self.remove_edge(self.get_edge(v1, v2))
+
+    def get_downstream_edges(self, v: VertexBase) -> List[EdgeBase]:
+        self.validate_vertex(v)
+        if v._id not in self._vertices or v.graph is not self or self._vertices[v._id] is not v:
+            raise DaskPipesException("{} is not in graph".format(v))
+        return [self._edges[i] for i in self._downstream_edges[v._id]]
+
+    def get_upstream_edges(self, v: VertexBase) -> List[EdgeBase]:
+        self.validate_vertex(v)
+        if v._id not in self._vertices or v.graph is not self or self._vertices[v._id] is not v:
+            raise DaskPipesException("{} is not in graph".format(v))
+        return [self._edges[i] for i in self._upstream_edges[v._id]]
 
     def add_edge(self, edge: EdgeBase, edge_id=None) -> EdgeBase:
         """

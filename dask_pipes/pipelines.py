@@ -3,17 +3,16 @@ import os
 import yaml
 import pandas as pd
 import dask.dataframe as dd
-import numpy as np
-from .exceptions import *
+from .exceptions import DaskPipesException
 
-from .utils import *
+from .utils import try_create_dir
 
-from .base import Pipeline
+from .base import PipelineBase
 
 __all__ = ['DirPipeline']
 
 
-def dump_dict(path, suffix, d: dict) -> None:
+def dump_dict(path, suffix, d: dict) -> Dict[str, str]:
     csv_dump = {k: v for k, v in d.items() if isinstance(v, pd.DataFrame)}
     parquet_dump = {k: v for k, v in d.items() if isinstance(v, dd.DataFrame)}
     yaml_dump = {k: v for k, v in d.items() if
@@ -22,6 +21,8 @@ def dump_dict(path, suffix, d: dict) -> None:
                  isinstance(v, int) or
                  isinstance(v, float) or
                  isinstance(v, str)}
+
+    out_files = dict()
 
     # Unrecognised format
     recognised = set(csv_dump.keys()).union(parquet_dump.keys()).union(yaml_dump.keys())
@@ -35,16 +36,56 @@ def dump_dict(path, suffix, d: dict) -> None:
         ds: pd.DataFrame
         csv_path = os.path.join(path, '{}{}.csv'.format(csv_name, suffix))
         ds.to_csv(csv_path)
+        out_files[csv_name] = csv_path
 
     for parquet_name, ds in parquet_dump.items():
         ds: dd.DataFrame
         parquet_path = os.path.join(path, '{}{}.parquet'.format(parquet_name, suffix))
         ds.to_parquet(parquet_path)
+        out_files[parquet_name] = parquet_path
 
-    yaml_name = 'params'
-    yaml_path = os.path.join(path, '{}{}.yaml'.format(yaml_name, suffix))
-    with open(yaml_path, 'w', encoding='utf-8') as f:
-        yaml.dump(yaml_dump, f)
+    if len(yaml_dump) > 0:
+        yaml_name = 'params'
+        yaml_path = os.path.join(path, '{}{}.yaml'.format(yaml_name, suffix))
+        with open(yaml_path, 'w', encoding='utf-8') as f:
+            yaml.dump(yaml_dump, f)
+        out_files[yaml_name] = yaml_path
+
+    return out_files
+
+
+def _read_csv(resource_name, file_path):
+    try:
+        ds = pd.read_csv(file_path)
+        ds.set_index(ds.columns[0])
+        return {resource_name: ds}
+    except Exception as ex:
+        raise DaskPipesException("Error reading {}".format(file_path)) from ex
+
+
+def _read_parquet(resource_name, file_path):
+    try:
+        return {resource_name: dd.read_parquet(file_path)}
+    except Exception as ex:
+        raise DaskPipesException("Error reading {}".format(file_path)) from ex
+
+
+def _read_yaml(resource_name, file_path):
+    if resource_name != 'params':
+        return dict()
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return yaml.load(f, Loader=yaml.FullLoader)
+    except Exception as ex:
+        raise DaskPipesException("Error reading {}".format(file_path)) from ex
+
+
+ext_reader_mapping = {
+    '.csv': _read_csv,
+    '.parquet': _read_parquet,
+    '.yaml': _read_yaml,
+    '.yml': _read_yaml
+}
 
 
 def load_dict(path, suffix) -> Dict[str, Any]:
@@ -52,44 +93,22 @@ def load_dict(path, suffix) -> Dict[str, Any]:
     for fname in os.listdir(path):
         file_path = os.path.join(path, fname)
         file_name, file_ext = os.path.splitext(fname)
-
         if len(suffix) >= len(file_name):
             continue
-
         if file_name[-len(suffix):] != suffix:
             continue
-
         resource_name = file_name[:-len(suffix)]
 
-        if file_ext == '.csv':
-            try:
-                ds = pd.read_csv(file_path)
-                ds.set_index(ds.columns[0])
-                rv[resource_name] = ds
-            except Exception as ex:
-                raise DaskPipesException("Error reading {}".format(file_path)) from ex
-        elif file_ext == '.parquet':
-            try:
-                rv[resource_name] = dd.read_parquet(file_path)
-            except Exception as ex:
-                raise DaskPipesException("Error reading {}".format(file_path)) from ex
-        elif file_ext == '.yaml':
-            if resource_name != 'params':
-                continue
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    params = yaml.load(f, Loader=yaml.FullLoader)
-            except Exception as ex:
-                raise DaskPipesException("Error reading {}".format(file_path)) from ex
-            for k, v in params.items():
-                rv[k] = v
-        else:
-            raise DaskPipesException("Unrecognized file extension: {}".format(file_ext))
+        if file_ext not in ext_reader_mapping:
+            raise DaskPipesException("Unknown extension: {}".format(file_ext))
+        for k, v in ext_reader_mapping[file_ext](resource_name, file_path).items():
+            assert k not in rv
+            rv[k] = v
 
     return rv
 
 
-class DirPipeline(Pipeline):
+class DirPipeline(PipelineBase):
 
     def __init__(self, params_dir, persist_dir):
         super().__init__()
