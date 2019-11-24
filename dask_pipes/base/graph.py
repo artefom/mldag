@@ -13,16 +13,13 @@ class VertexBase:
     Can only be assigned to one graph at a time
     """
 
-    def __init__(self, graph=None):
+    def __init__(self):
         """
         :param graph: If passed, current vertex assigned to graph
         :type graph: Graph
         """
         self._graph = None  # type: Optional[Graph]
         self._id = None  # type: Optional[int]
-
-        if graph is not None:
-            self.graph = graph
 
     def __repr__(self):
         return '<{}: {}>'.format(self.__class__.__name__, self._id)
@@ -52,7 +49,8 @@ class VertexBase:
 
     @graph.setter
     def graph(self, graph):
-        Graph.validate(graph)
+        if graph is not None:
+            Graph.validate(graph)
         if self._graph is not None:
             self._graph.remove_vertex(self)
         self._id = None
@@ -204,7 +202,8 @@ class EdgeBase:
 
     @graph.setter
     def graph(self, graph):
-        Graph.validate(graph)
+        if graph is not None:
+            Graph.validate(graph)
 
         if self._v1 is None or self._v2 is None:
             raise DaskPipesException(
@@ -477,6 +476,8 @@ class Graph:
         :return: added vertex
         """
         self.validate_vertex(vertex)
+        if vertex is None:
+            raise DaskPipesException("Expected {}, got None".format(VertexBase.__class__.__name__))
         if vertex._graph is not None:
             if vertex._graph is not self:
                 raise DaskPipesException(

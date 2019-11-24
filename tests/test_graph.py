@@ -50,8 +50,10 @@ ds_name = 'test_ds'
 
 def test_edges_3():
     f1 = dp.Graph()
-    v1 = dp.VertexBase(f1)
-    v2 = dp.VertexBase(f1)
+    v1 = dp.VertexBase()
+    v2 = dp.VertexBase()
+    v1.graph = f1
+    v2.graph = f1
 
     e = dp.EdgeBase(v1, v2)
     assert len(f1.edges) == 0
@@ -63,11 +65,13 @@ def test_edges_3():
 
 def test_edges_negative_2():
     f1 = dp.Graph()
-    v1 = dp.VertexBase(f1)
+    v1 = dp.VertexBase()
+    v1.graph = f1
     v2 = dp.VertexBase()
 
     f2 = dp.Graph()
-    v3 = dp.VertexBase(f2)
+    v3 = dp.VertexBase()
+    v3.graph = f2
     v4 = dp.VertexBase()
 
     e0 = dp.EdgeBase()
@@ -92,11 +96,13 @@ def test_edges_negative_2():
 
 def test_edges_negative():
     f1 = dp.Graph()
-    v1 = dp.VertexBase(f1)
+    v1 = dp.VertexBase()
+    v1.graph = f1
     v2 = dp.VertexBase()
 
     f2 = dp.Graph()
-    v3 = dp.VertexBase(f2)
+    v3 = dp.VertexBase()
+    f2.add_vertex(v3)
     v4 = dp.VertexBase()
 
     with pytest.raises(DaskPipesException):
@@ -112,7 +118,8 @@ def test_edges_negative():
 
 def test_edges():
     g = dp.Graph()
-    v1 = dp.VertexBase(g)
+    v1 = dp.VertexBase()
+    g.add_vertex(v1)
     v2 = dp.VertexBase()
     v3 = dp.VertexBase()
     v4 = dp.VertexBase()
@@ -212,7 +219,8 @@ def test_vertex_iter():
 
 def test_graph_1():
     g = dp.Graph()
-    v1 = dp.VertexBase(g)
+    v1 = dp.VertexBase()
+    g.add_vertex(v1)
     v2 = dp.VertexBase()
     v3 = dp.VertexBase()
     v4 = dp.VertexBase()
