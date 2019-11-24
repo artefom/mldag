@@ -11,7 +11,7 @@ import dask.dataframe as dd
 import importlib
 from .exceptions import *
 
-__all__ = ['read_file', 'dump_yaml', 'load_yaml', 'cleanup_empty_dirs', 'try_create_folder', 'import_class', 'is_int',
+__all__ = ['read_file', 'dump_yaml', 'load_yaml', 'cleanup_empty_dirs', 'try_create_dir', 'import_class', 'is_int',
            'assert_subclass', 'get_arguments_description', 'get_return_description', 'ArgumentDescription',
            'ReturnDescription']
 
@@ -86,7 +86,7 @@ def import_class(module_name, class_name):
     return cls
 
 
-def try_create_folder(folder):
+def try_create_dir(folder):
     if folder is not None and not os.path.exists(folder):
         try:
             os.mkdir(folder)

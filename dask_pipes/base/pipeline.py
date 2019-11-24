@@ -4,8 +4,6 @@ from typing import Any, Dict, List, Tuple, Type, Optional, NamedTuple
 from collections import namedtuple
 import inspect
 from ..utils import *
-from types import MethodType
-import sys
 
 __all__ = ['OperatorConnection', 'OperatorBase', 'Pipeline', 'OperatorBaseMeta', 'ExampleOperator']
 
@@ -197,13 +195,12 @@ class ExampleOperator(OperatorBase):
 
     def fit(self, dataset) -> Dict[str, Any]:
         """Some docstring"""
-        print("Fittin {}".format(self))
         return {'a': 1}
 
     @classmethod
     def transform(cls, params, dataset):
         """Some docstring"""
-        print("Transformin {}".format(cls.__name__))
+        assert params['a'] == 1
         return dataset
 
 
@@ -240,16 +237,16 @@ class Pipeline(Graph):
     def validate_vertex(self, vertex):
         OperatorBase.validate(vertex)
 
-    def dump_params(self, vertex_name: str, run_name: str, params: Dict[str, Any]):
+    def dump_params(self, run_name: str, vertex_name: str, params: Dict[str, Any]):
         raise NotImplementedError()
 
-    def dump_outputs(self, vertex_name: str, run_name: str, outputs: Dict[str, Any]):
+    def dump_outputs(self, run_name: str, vertex_name: str, outputs: Dict[str, Any]):
         raise NotImplementedError()
 
-    def load_params(self, vertex_name: str, run_name: str):
+    def load_params(self, run_name: str, vertex_name: str) -> Dict[str, Any]:
         raise NotImplementedError()
 
-    def load_outputs(self, vertex_name: str, run_name: str):
+    def load_outputs(self, run_name: str, vertex_name: str) -> Dict[str, Any]:
         raise NotImplementedError()
 
     def remove_input(self, operator: OperatorBase):
@@ -261,8 +258,7 @@ class Pipeline(Graph):
         fit_func = self.fit.__func__
         transform_func = self.transform.__func__
         sign = inspect.signature(fit_func)
-        self_param = next(iter(sign.parameters.values()))
-        new_params = [self_param]
+        new_params = list(sign.parameters.values())[:2]
         seen_params = set()
 
         for inp in self._inputs:
@@ -408,10 +404,7 @@ class Pipeline(Graph):
 
         return output
 
-    def fit(self, *args, **kwargs):
-        """
-        Main method for fitting pipeline. Sequentially calls fit_transform of child operators
-        """
+    def _iterate_graph(self, func, *args, **kwargs):
         args = self._parse_arguments(*args, **kwargs)
         operator_arguments = {op: dict() for op in self.vertices}
         for inp in self._inputs:
@@ -423,21 +416,7 @@ class Pipeline(Graph):
             if len(op_args) == 0:
                 raise DaskPipesException("No input for operator {}".format(op))
 
-            # ----------------------
-            # Fit operator
-            # ----------------------
-            params = op.fit(**op_args)
-
-            # ----------------------
-            # Save fitted parameters
-            # ----------------------
-            # TODO: Save params for future use
-
-            # ----------------------
-            # Transform operator
-            # ----------------------
-            op_result = Pipeline._parse_operator_output(op.__class__,
-                                                        op.__class__.transform(params, **op_args))
+            op_result = func(op, **op_args)
 
             # Get downstream edges
             for downstream_op in self.get_downstream_vertices(op):
@@ -449,24 +428,79 @@ class Pipeline(Graph):
                             "Duplicate argument for {}['{}']. "
                             "Already contains {}".format(downstream_op, edge.downstream_slot,
                                                          operator_arguments[downstream_op][edge.downstream_slot]))
+                    if downstream_op not in operator_arguments:
+                        raise DaskPipesException("Pipeline does not have {}".format(downstream_op))
+                    if edge.upstream_slot not in op_result:
+                        raise DaskPipesException(
+                            "Operator {} did not return expected {}; "
+                            "recieved {}".format(op, edge.upstream_slot, list(op_result.keys())))
+
                     operator_arguments[downstream_op][edge.downstream_slot] = op_result[edge.upstream_slot]
 
-    def transform(self, *args, **kwargs):
-        """
-        Method for transforming the data.
-        Does not alter the fitted parameters
-        :param args:
-        :param kwargs:
-        :return:
-        """
-        params = {k: v for k, v in kwargs.items()}
-        if len(args) > 1:
-            raise DaskPipesException("More than one positional dataset not supported")
-        elif len(args) == 1:
-            params[None] = args[0]
+        # Pass
 
-        operator_outputs = dict()
+    def _fit(self, run_name, op, **op_args):
+        # ----------------------
+        # Fit operator
+        # ----------------------
+        params = op.fit(**op_args)
 
-        for operator in VertexWidthFirst(self):
-            operator: OperatorBase
-            pass
+        # ----------------------
+        # Save fitted parameters
+        # ----------------------
+        try:
+            self.dump_params(run_name, op.name, params)
+        except Exception as ex:
+            raise DaskPipesException("Error saving parameters of {}".format(op)) from ex
+
+    def _transform(self, run_name, op, **op_args):
+        params = self.load_params(run_name, op.name)
+        if not isinstance(params, dict):
+            raise DaskPipesException("Error after loading parameters. Expected {}, received {}".format(
+                dict.__name__, params.__class__.__name__))
+
+        # ----------------------
+        # Transform operator
+        # ----------------------
+        op_result = Pipeline._parse_operator_output(op.__class__,
+                                                    op.__class__.transform(params, **op_args))
+        if len(op_result) == 0:
+            raise DaskPipesException("Operator {} did not return anything".format(op))
+
+        # ----------------------
+        # Save persist datasets
+        # ----------------------
+        try:
+            self.dump_outputs(run_name, op.name, op_result)
+        except Exception as ex:
+            raise DaskPipesException("Error saving outputs of {}".format(op)) from ex
+
+        try:
+            op_result = self.load_outputs(run_name, op.name)
+        except Exception as ex:
+            raise DaskPipesException("Error loading outputs of {}".format(op)) from ex
+
+        if not isinstance(params, dict):
+            raise DaskPipesException("Error after loading persist. Expected {}, received {}".format(
+                Dict[str, Any].__name__, params.__class__.__name__))
+        if len(op_result) == 0:
+            raise DaskPipesException("Error loading outputs {}. got empty dict".format(op.name))
+        return op_result
+
+    def fit(self, run_name, *args, **kwargs):
+        """
+        Main method for fitting pipeline. Sequentially calls fit_transform of child operators
+        """
+
+        def func(op, **op_args):
+            self._fit(run_name, op, **op_args)
+            return self._transform(run_name, op, **op_args)
+
+        self._iterate_graph(func, *args, **kwargs)
+        return self
+
+    def transform(self, run_name, *args, **kwargs):
+        def func(op, **op_args):
+            return self._transform(run_name, op, **op_args)
+
+        return self._iterate_graph(func, *args, **kwargs)
