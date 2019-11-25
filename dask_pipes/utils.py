@@ -1,4 +1,4 @@
-from typing import Union, Dict, Any, Callable, List
+from typing import Union, Dict, Any, Callable, List, Type
 from collections import namedtuple
 import yaml
 
@@ -8,12 +8,13 @@ import numpy as np
 import inspect
 
 import dask.dataframe as dd
+import pandas as pd
 import importlib
 from .exceptions import DaskPipesException
 
 __all__ = ['read_file', 'dump_yaml', 'load_yaml', 'cleanup_empty_dirs', 'try_create_dir', 'import_class', 'is_int',
            'assert_subclass', 'get_arguments_description', 'get_return_description', 'ArgumentDescription',
-           'ReturnDescription']
+           'ReturnDescription', 'is_categorical']
 
 VALIDATE_SUBCLASSES = False
 
@@ -21,6 +22,20 @@ ArgumentDescription = namedtuple("ArgumentDescription", ['name', 'type', 'descri
 ReturnDescription = namedtuple("ArgumentDescription", ['name', 'type', 'description'])
 
 RETURN_UNNAMED = '<unnamed>'
+
+
+def is_categorical(type: Type) -> bool:
+    try:
+        if (np.issubdtype(type, np.number) or
+                np.issubdtype(type, np.bool_) or
+                np.issubdtype(type, np.datetime64) or
+                isinstance(type, int) or
+                isinstance(type, bool) or
+                isinstance(type, float)):
+            return False
+    except TypeError:
+        pass
+    return True
 
 
 def get_arguments_description(func: Callable, skip_first=1) -> List[ArgumentDescription]:

@@ -512,6 +512,7 @@ class PipelineBase(Graph):
         :param suffix: suffix to add to operator's inputs before setting them as pipeline inputs
         :return:
         """
+        self.validate_vertex(operator)
 
         if suffix is None:
             suffix = ''
@@ -543,6 +544,8 @@ class PipelineBase(Graph):
         :param operator: operator to unset as output
         :return:
         """
+        self.validate_vertex(operator)
+
         # Find inputs to remove
         self._inputs = [i for i in self._inputs if i.downstream_operator is not operator]
         self._update_fit_transform_signatures()
@@ -638,6 +641,10 @@ class PipelineBase(Graph):
     def _parse_arguments(self, *args, **kwargs) -> Dict[str, Any]:
 
         expected_inputs = {i.arg_name for i in self._inputs}
+        if len(expected_inputs) == 0 and (len(args) > 0 or len(kwargs) > 0):
+            raise DaskPipesException(
+                "{} Does not have any inputs. (used .set_input(op) to set operators as input)".format(self))
+
         unseen_inputs = {i for i in expected_inputs}
 
         rv = {k: v for k, v in kwargs.items()}
@@ -783,6 +790,9 @@ class PipelineBase(Graph):
         # ----------------------
         # Fit operator
         # ----------------------
+        # Make copy of arguments
+        op_args = {k: v.copy() for k, v in op_args.items()}
+
         params = op.fit(**op_args)
 
         # ----------------------
@@ -809,6 +819,9 @@ class PipelineBase(Graph):
         # ----------------------
         # Transform operator
         # ----------------------
+        # Make copy of arguments
+        op_args = {k: v.copy() for k, v in op_args.items()}
+
         op_result = PipelineBase._parse_operator_output(op.__class__,
                                                         op.__class__.transform(params, **op_args))
         if len(op_result) == 0:
