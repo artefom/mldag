@@ -1,6 +1,7 @@
 from .graph import Graph, VertexBase, EdgeBase, VertexWidthFirst
 from ..exceptions import DaskPipesException
 from typing import Any, Dict, List, Optional
+from types import MethodType
 from collections import namedtuple
 import inspect
 from ..utils import (ArgumentDescription,
@@ -123,11 +124,8 @@ class OperatorBaseMeta(type):
             raise DaskPipesException("Class does not have fit method")
 
         # Check transform parameters
-        if 'transform' in attrs:
-            if not isinstance(attrs['transform'], classmethod):
-                raise DaskPipesException("Transform must be a classmethod")
-        else:
-            raise DaskPipesException("Class does not have transform method")
+        if 'transform' not in attrs:
+            raise DaskPipesException("Class {} does not have transform method".format(name))
 
         return super().__new__(mcs, name, bases, attrs)
 
@@ -234,7 +232,7 @@ class OperatorBase(VertexBase, metaclass=OperatorBaseMeta):
         """
         super().set_downstream(other, upstream_slot=upstream_slot, downstream_slot=downstream_slot)
 
-    def fit(self, *args, **kwargs) -> Dict[str, Any]:
+    def fit(self, *args, **kwargs):
         """
         Infer parameters prior to transforming dataset
         To be implemented by subclass pipelines
@@ -267,8 +265,7 @@ class OperatorBase(VertexBase, metaclass=OperatorBaseMeta):
         """
         raise NotImplementedError()
 
-    @classmethod
-    def transform(cls, *args, **kwargs):
+    def transform(self, *args, **kwargs):
         """
         To be implemented by subclass pipelines
 
@@ -310,23 +307,23 @@ class OperatorBase(VertexBase, metaclass=OperatorBaseMeta):
 
 class ExampleOperator(OperatorBase):
 
-    def fit(self, dataset) -> Dict[str, Any]:
+    def fit(self, dataset):
         """
         Example docstring
         :param dataset: dataset to fit to
         :return: Parameters passed to .transform
         """
-        return {'a': 1}
+        self.params = {'a': 1}
+        print("Fitting {}".format(dataset))
 
-    @classmethod
-    def transform(cls, params, dataset):
+    def transform(self, dataset):
         """
         Example docstring
-        :param params: - obligatory parameter, containing output of fit
         :param dataset: dataset to transform
         :return:
         """
-        assert params['a'] == 1
+        assert dataset is not None
+        assert self.params['a'] == 1
         return dataset
 
 
@@ -444,7 +441,7 @@ class PipelineBase(Graph):
         """
         OperatorBase.validate(vertex)
 
-    def dump_params(self, run_name: str, vertex_name: str, params: Dict[str, Any]):
+    def dump_params(self, vertex_name: str, params: Dict[str, Any], run_name: Optional[str] = None):
         """
         Save output of operator's fit method somewhere
         to be implemented in subclasses
@@ -455,7 +452,7 @@ class PipelineBase(Graph):
         """
         raise NotImplementedError()
 
-    def dump_outputs(self, run_name: str, vertex_name: str, outputs: Dict[str, Any]) -> Dict[str, Any]:
+    def dump_outputs(self, vertex_name: str, outputs: Dict[str, Any], run_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Save output of operator's transform method somewhere (used to persist dataframes after calculations)
         to be implemented in subclasses
@@ -466,7 +463,7 @@ class PipelineBase(Graph):
         """
         raise NotImplementedError()
 
-    def load_params(self, run_name: str, vertex_name: str) -> Dict[str, Any]:
+    def load_params(self, vertex_name: str, run_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Load parameters which fit function previously returned and which were dumped using dump_params
         Loaded params are shortly passed to .transform method
@@ -477,7 +474,7 @@ class PipelineBase(Graph):
         """
         raise NotImplementedError()
 
-    def load_outputs(self, run_name: str, vertex_name: str) -> Dict[str, Any]:
+    def load_outputs(self, vertex_name: str, run_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Load outputs of .transform method which previously was dumped using dump_params
         loaded outputs are shortly passed to .transform method or yielded as pipeline output
@@ -550,6 +547,28 @@ class PipelineBase(Graph):
         self._inputs = [i for i in self._inputs if i.downstream_operator is not operator]
         self._update_fit_transform_signatures()
 
+    @staticmethod
+    def replace_signature(func, sign):
+        def wrapped(*args, **kwargs):
+            return func(*args, **kwargs)
+
+        wrapped.__signature__ = sign
+        wrapped.__doc__ = func.__doc__
+        wrapped.__name__ = func.__name__
+        return wrapped
+
+    def _set_fit_signature(self, sign: inspect.Signature):
+        self.fit = MethodType(PipelineBase.replace_signature(PipelineBase.fit, sign), self)
+
+    def _set_transform_signature(self, sign: inspect.Signature):
+        self.transform = MethodType(PipelineBase.replace_signature(PipelineBase.transform, sign), self)
+
+    def _reset_fit_signature(self):
+        self.fit = MethodType(self.__class__.fit, self)
+
+    def _reset_transform_signature(self):
+        self.transform = MethodType(self.__class__.transform, self)
+
     def _update_fit_transform_signatures(self):
         """
         Called when input operator is added or removed.
@@ -558,27 +577,46 @@ class PipelineBase(Graph):
         """
         fit_func = getattr(self.fit, '__func__')  # Since fit is method, it has __func__
         transform_func = getattr(self.transform, '__func__')  # Since transform is method, it has __func__
-        sign = inspect.signature(fit_func)
-        new_params = list(sign.parameters.values())[:2]
+        fit_sign = inspect.signature(fit_func)
+        transform_sign = inspect.signature(transform_func)
+
+        original_prams = list(fit_sign.parameters.values())
+
+        new_params_kwargs = [i for i in original_prams if i.kind == inspect.Parameter.KEYWORD_ONLY]
+        new_params_pos_only = [i for i in original_prams if i.kind == inspect.Parameter.POSITIONAL_ONLY]
+        new_params_pos = [i for i in original_prams if i.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD]
         seen_params = set()
 
-        for inp in self._inputs:
-            if inp.arg_name in seen_params:
-                continue
-            param = inspect.Parameter(
-                name=inp.arg_name,
-                kind=inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                default=None)
-            new_params.append(param)
-            seen_params.add(inp.arg_name)
+        if len(self._inputs) > 0:
+            for inp in self._inputs:
+                if inp.arg_name in seen_params:
+                    continue
+                param = inspect.Parameter(
+                    name=inp.arg_name,
+                    kind=inspect.Parameter.POSITIONAL_OR_KEYWORD
+                    if len(self._inputs) == 1 else inspect.Parameter.KEYWORD_ONLY,
+                    default=None)
 
-        fit_func.__signature__ = inspect.Signature(
-            parameters=new_params,
-            return_annotation=sign.return_annotation)
+                if param.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD:
+                    new_params_pos.append(param)
+                elif param.kind == inspect.Parameter.KEYWORD_ONLY:
+                    new_params_pos_only.append(param)
+                else:
+                    raise TypeError("Invalid parameter king")
 
-        transform_func.__signature__ = inspect.Signature(
-            parameters=new_params,
-            return_annotation=sign.return_annotation)
+                seen_params.add(inp.arg_name)
+            new_params = new_params_pos_only + new_params_pos + new_params_kwargs
+
+            self._set_fit_signature(inspect.Signature(
+                parameters=new_params,
+                return_annotation=fit_sign.return_annotation))
+
+            self._set_transform_signature(inspect.Signature(
+                parameters=new_params,
+                return_annotation=transform_sign.return_annotation))
+        else:
+            self._reset_fit_signature()
+            self._reset_transform_signature()
 
     def connect(self,
                 upstream: OperatorBase,
@@ -675,7 +713,7 @@ class PipelineBase(Graph):
         return rv
 
     @staticmethod
-    def _parse_operator_output(operator_cls, output):
+    def _parse_operator_output(operator, output):
         """
         Get dictionary of key-values from return of function
 
@@ -686,7 +724,7 @@ class PipelineBase(Graph):
         :param output: return value of .transform() method
         :return:
         """
-        expected_result: List[ReturnDescription] = operator_cls.outputs
+        expected_result: List[ReturnDescription] = operator.outputs
         expected_keys = [i.name for i in expected_result]
         if not isinstance(output, list) and not isinstance(output, tuple) and not isinstance(output, dict):
             output = (output,)
@@ -696,7 +734,7 @@ class PipelineBase(Graph):
             if len(output) != len(expected_result):
                 raise DaskPipesException(
                     "{}.transform result length does not match expected. Expected {}, got {}".format(
-                        operator_cls.__name__,
+                        operator,
                         ['{}: {}'.format(i.name, i.type) for i in expected_result],
                         [i.__class__.__name__ for i in output]
                     ))
@@ -707,7 +745,7 @@ class PipelineBase(Graph):
             if set(expected_keys) != got_keys:
                 raise DaskPipesException(
                     "{}.transform result does not match expected. Expected keys: {}, received: {}".format(
-                        operator_cls.__name__,
+                        operator,
                         expected_keys, got_keys
                     ))
         else:
@@ -779,7 +817,7 @@ class PipelineBase(Graph):
 
         return outputs
 
-    def _fit(self, run_name, op, **op_args):
+    def _fit(self, op, *, run_name=None, **op_args):
         """
         Helper function used for fit call and dumping params
         :param run_name:
@@ -792,18 +830,9 @@ class PipelineBase(Graph):
         # ----------------------
         # Make copy of arguments
         op_args = {k: v.copy() for k, v in op_args.items()}
+        op.fit(**op_args)
 
-        params = op.fit(**op_args)
-
-        # ----------------------
-        # Save fitted parameters
-        # ----------------------
-        try:
-            self.dump_params(run_name, op.name, params)
-        except Exception as ex:
-            raise DaskPipesException("Error saving parameters of {}".format(op)) from ex
-
-    def _transform(self, run_name, op, **op_args):
+    def _transform(self, op, *, run_name=None, **op_args):
         """
         Helper function, used for transform call and dumping outputs
         :param run_name:
@@ -811,10 +840,6 @@ class PipelineBase(Graph):
         :param op_args:
         :return:
         """
-        params = self.load_params(run_name, op.name)
-        if not isinstance(params, dict):
-            raise DaskPipesException("Error after loading parameters. Expected {}, received {}".format(
-                dict.__name__, params.__class__.__name__))
 
         # ----------------------
         # Transform operator
@@ -822,8 +847,7 @@ class PipelineBase(Graph):
         # Make copy of arguments
         op_args = {k: v.copy() for k, v in op_args.items()}
 
-        op_result = PipelineBase._parse_operator_output(op.__class__,
-                                                        op.__class__.transform(params, **op_args))
+        op_result = PipelineBase._parse_operator_output(op, op.transform(**op_args))
         if len(op_result) == 0:
             raise DaskPipesException("Operator {} did not return anything".format(op))
 
@@ -831,23 +855,20 @@ class PipelineBase(Graph):
         # Save persist datasets
         # ----------------------
         try:
-            self.dump_outputs(run_name, op.name, op_result)
+            self.dump_outputs(op.name, op_result, run_name=run_name)
         except Exception as ex:
             raise DaskPipesException("Error saving outputs of {}".format(op)) from ex
 
         try:
-            op_result = self.load_outputs(run_name, op.name)
+            op_result = self.load_outputs(op.name, run_name=run_name)
         except Exception as ex:
             raise DaskPipesException("Error loading outputs of {}".format(op)) from ex
 
-        if not isinstance(params, dict):
-            raise DaskPipesException("Error after loading persist. Expected {}, received {}".format(
-                Dict[str, Any].__name__, params.__class__.__name__))
         if len(op_result) == 0:
             raise DaskPipesException("Error loading outputs {}. got empty dict".format(op.name))
         return op_result
 
-    def fit(self, run_name, *args, **kwargs):
+    def fit(self, *args, run_name=None, **kwargs):
         """
         Main method for fitting pipeline.
         Sequentially calls fit and transform in width-first order
@@ -857,15 +878,18 @@ class PipelineBase(Graph):
         :return: self
         """
 
+        if run_name is not None and not isinstance(run_name, str):
+            raise TypeError("run_name must be str or None")
+
         def func(op, has_downstream, **op_args):
-            self._fit(run_name, op, **op_args)
+            self._fit(op, run_name=run_name, **op_args)
             if has_downstream:
-                return self._transform(run_name, op, **op_args)
+                return self._transform(op, run_name=run_name, **op_args)
 
         self._iterate_graph(func, *args, **kwargs)
         return self
 
-    def transform(self, run_name, *args, **kwargs):
+    def transform(self, *args, run_name=None, **kwargs):
         """
         Method for transforming based on previously fitted parameters
         :param run_name: name of run for logging and dumping data
@@ -875,8 +899,11 @@ class PipelineBase(Graph):
         Output of operators that was not piped anywhere
         """
 
+        if run_name is not None and not isinstance(run_name, str):
+            raise TypeError("run_name must be str or None")
+
         def func(op, has_downstream, **op_args):
-            return self._transform(run_name, op, **op_args)
+            return self._transform(op, run_name=run_name, **op_args)
 
         outputs = self._iterate_graph(func, *args, **kwargs)
         rv = {'{}_{}'.format(k[0].name, k[1]): v for k, v in outputs.items()}

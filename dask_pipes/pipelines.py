@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import os
 import yaml
 import pandas as pd
@@ -124,24 +124,24 @@ class DirPipeline(PipelineBase):
         try_create_dir(self.params_dir)
         try_create_dir(self.persist_dir)
 
-    def dump_params(self, run_name: str, vertex_name: str, params: Dict[str, Any]):
+    def dump_params(self, vertex_name: str, params: Dict[str, Any], run_name: Optional[str] = None):
         dir_name = os.path.join(self.params_dir, vertex_name)
         try_create_dir(dir_name)
-        suffix = '_{}'.format(run_name)
+        suffix = '_{}'.format(run_name) if run_name else ''
         dump_dict(dir_name, suffix, params)
 
-    def dump_outputs(self, run_name: str, vertex_name: str, outputs: Dict[str, Any]):
+    def dump_outputs(self, vertex_name: str, outputs: Dict[str, Any], run_name: Optional[str] = None):
         dir_name = os.path.join(self.persist_dir, vertex_name)
         try_create_dir(dir_name)
-        suffix = '_{}'.format(run_name)
+        suffix = '_{}'.format(run_name) if run_name else ''
         dump_dict(dir_name, suffix, outputs)
 
-    def load_params(self, run_name: str, vertex_name: str) -> Dict[str, Any]:
+    def load_params(self, vertex_name: str, run_name: Optional[str] = None) -> Dict[str, Any]:
         dir_name = os.path.join(self.params_dir, vertex_name)
-        suffix = '_{}'.format(run_name)
+        suffix = '_{}'.format(run_name) if run_name else ''
         return load_dict(dir_name, suffix)
 
-    def load_outputs(self, run_name: str, vertex_name: str) -> Dict[str, Any]:
+    def load_outputs(self, vertex_name: str, run_name: Optional[str] = None) -> Dict[str, Any]:
         dir_name = os.path.join(self.persist_dir, vertex_name)
-        suffix = '_{}'.format(run_name)
+        suffix = '_{}'.format(run_name) if run_name else ''
         return load_dict(dir_name, suffix)

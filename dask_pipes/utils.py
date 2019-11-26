@@ -8,7 +8,6 @@ import numpy as np
 import inspect
 
 import dask.dataframe as dd
-import pandas as pd
 import importlib
 from .exceptions import DaskPipesException
 
