@@ -13,7 +13,7 @@ from .exceptions import DaskPipesException
 
 __all__ = ['read_file', 'dump_yaml', 'load_yaml', 'cleanup_empty_dirs', 'try_create_dir', 'import_class', 'is_int',
            'assert_subclass', 'get_arguments_description', 'get_return_description', 'ArgumentDescription',
-           'ReturnDescription', 'is_categorical']
+           'ReturnDescription', 'is_categorical', 'replace_signature']
 
 VALIDATE_SUBCLASSES = False
 
@@ -21,6 +21,16 @@ ArgumentDescription = namedtuple("ArgumentDescription", ['name', 'type', 'descri
 ReturnDescription = namedtuple("ArgumentDescription", ['name', 'type', 'description'])
 
 RETURN_UNNAMED = 'result'
+
+
+def replace_signature(func, sign):
+    def wrapped(*args, **kwargs):
+        return func(*args, **kwargs)
+
+    wrapped.__signature__ = sign
+    wrapped.__doc__ = func.__doc__
+    wrapped.__name__ = func.__name__
+    return wrapped
 
 
 def is_categorical(type: Type) -> bool:

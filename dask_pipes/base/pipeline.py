@@ -9,9 +9,10 @@ from ..utils import (ArgumentDescription,
                      get_arguments_description,
                      get_return_description,
                      ReturnDescription,
-                     assert_subclass)
+                     assert_subclass,
+                     replace_signature)
 
-__all__ = ['NodeConnection', 'NodeBase', 'PipelineBase', 'NodeBaseMeta', 'ExampleNode']
+__all__ = ['NodeConnection', 'NodeBase', 'Pipeline', 'NodeBaseMeta', 'ExampleNode']
 
 NodeInput = namedtuple("NodeInput", ['input_arg', 'upstream_output_name', 'upstream_node'])
 
@@ -76,29 +77,6 @@ class NodeConnection(EdgeBase):
 
 class NodeBaseMeta(type):
 
-    @property
-    def outputs(self) -> List[ReturnDescription]:
-        """
-        Outputs of an node (parses annotation of .transform function)
-
-        Since this is defined in meta, we can get node outputs just based on it's class
-        :return: List of named tuples 'ReturnDescription' with argument name, type and description
-        """
-        ret_descr = get_return_description(getattr(self, 'transform'))
-        return ret_descr
-
-    @property
-    def inputs(self) -> List[ArgumentDescription]:
-        """
-        Inputs of an node - parameters of self.fit function
-        must be equal to parameters of self.transform
-
-        Since this is defined in meta, we can get node outputs just based on it's class
-        :return:
-        """
-        arg_descr = get_arguments_description(getattr(self, 'fit'))
-        return arg_descr
-
     @staticmethod
     def wrap_fit(func):
         """Return a wrapped instance method"""
@@ -131,9 +109,20 @@ class NodeBaseMeta(type):
 
 class NodeBase(VertexBase, BaseEstimator, metaclass=NodeBaseMeta):
 
-    def __init__(self, name=None):
+    def __init__(self, name: str = None):
         super().__init__()
         self.name = name
+
+    @property
+    def outputs(self) -> List[ReturnDescription]:
+        """
+        Outputs of an node (parses annotation of .transform function)
+
+        Since this is defined in meta, we can get node outputs just based on it's class
+        :return: List of named tuples 'ReturnDescription' with argument name, type and description
+        """
+        ret_descr = get_return_description(getattr(self, 'transform'))
+        return ret_descr
 
     @property
     def inputs(self) -> List[ArgumentDescription]:
@@ -141,22 +130,11 @@ class NodeBase(VertexBase, BaseEstimator, metaclass=NodeBaseMeta):
         Inputs of an node - parameters of self.fit function
         must be equal to parameters of self.transform
 
-        This duplicates NodeBaseMeta's inputs property for convenience
-        (being able to do obj.inputs instead of obj.__class__.inputs)
-        :return: List of named tuples 'ReturnDescription' with argument name, type and description
-        """
-        return self.__class__.inputs
-
-    @property
-    def outputs(self) -> List[ReturnDescription]:
-        """
-        Outputs of an node (parses annotation of .transform function)
-
-        This duplicates NodeBaseMeta's inputs property for convenience
-        (being able to do obj.outputs instead of obj.__class__.outputs)
+        Since this is defined in meta, we can get node outputs just based on it's class
         :return:
         """
-        return self.__class__.outputs
+        arg_descr = get_arguments_description(getattr(self, 'fit'))
+        return arg_descr
 
     @staticmethod
     def validate(node):
@@ -179,7 +157,7 @@ class NodeBase(VertexBase, BaseEstimator, metaclass=NodeBaseMeta):
 
         Example:
         >>> # Construct pipeline and nodes
-        >>> p = PipelineBase()
+        >>> p = Pipeline()
         >>> op1 = ExampleNode('op1')
         >>> op2 = ExampleNode('op2')
         >>>
@@ -210,7 +188,7 @@ class NodeBase(VertexBase, BaseEstimator, metaclass=NodeBaseMeta):
 
         Example:
         >>> # Construct pipeline and nodes
-        >>> p = PipelineBase()
+        >>> p = Pipeline()
         >>> op1 = ExampleNode('op1')
         >>> op2 = ExampleNode('op2')
         >>>
@@ -247,7 +225,7 @@ class NodeBase(VertexBase, BaseEstimator, metaclass=NodeBaseMeta):
         # Example:
         >>> import pandas as pd
         >>> ds = pd.DataFrame([[1,2,3]])
-        >>> p = PipelineBase()
+        >>> p = Pipeline()
         >>> op1 = ExampleNode('op1')
         >>> op2 = ExampleNode('op2')
         >>> p.set_input(op1)
@@ -274,7 +252,7 @@ class NodeBase(VertexBase, BaseEstimator, metaclass=NodeBaseMeta):
         # Example
         >>> import pandas as pd
         >>> ds = pd.DataFrame([[1,2,3]])
-        >>> p = PipelineBase()
+        >>> p = Pipeline()
         >>> op1 = ExampleNode('op1')
         >>> op2 = ExampleNode('op2')
         >>> p.set_input(op1)
@@ -332,7 +310,7 @@ class ExampleNode(NodeBase):
         return dataset
 
 
-class PipelineBase(Graph):
+class Pipeline(Graph):
     """
     Pipeline is a graph structure, containing relationships between NodeBase (vertices)
     with NodeConnection as edges
@@ -456,49 +434,6 @@ class PipelineBase(Graph):
         """
         NodeBase.validate(vertex)
 
-    def dump_params(self, vertex_name: str, params: Dict[str, Any], run_name: Optional[str] = None):
-        """
-        Save output of node's fit method somewhere
-        to be implemented in subclasses
-        :param run_name: Name of run, specified in fit and transform methods
-        :param vertex_name: vertex name, which params we're saving. Can be used to infer filenames
-        :param params: params to save
-        :return:
-        """
-        raise NotImplementedError()
-
-    def dump_outputs(self, vertex_name: str, outputs: Dict[str, Any], run_name: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Save output of node's transform method somewhere (used to persist dataframes after calculations)
-        to be implemented in subclasses
-        :param run_name: Name of run, specified in fit and transform methods
-        :param vertex_name: Name of vertex which output we're dumping. Can used to infer filenames
-        :param outputs: Dataframes to save
-        :return:
-        """
-        raise NotImplementedError()
-
-    def load_params(self, vertex_name: str, run_name: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Load parameters which fit function previously returned and which were dumped using dump_params
-        Loaded params are shortly passed to .transform method
-        to be implemented in subclasses
-        :param run_name: Name of run, specified in fit and transform methods.
-        :param vertex_name: Name of vertex which params we're loading. Can used to infer filenames
-        :return: parameters
-        """
-        raise NotImplementedError()
-
-    def load_outputs(self, vertex_name: str, run_name: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Load outputs of .transform method which previously was dumped using dump_params
-        loaded outputs are shortly passed to .transform method or yielded as pipeline output
-        :param run_name: Name of run, specified in fit and transform methods
-        :param vertex_name: Name of vertex which output we're loading. Can used to infer filenames
-        :return:
-        """
-        raise NotImplementedError()
-
     def set_input(self, node: NodeBase, suffix=None):
         """
         Register node as pipeline's input.
@@ -512,7 +447,7 @@ class PipelineBase(Graph):
 
         Example:
         >>> # Construct pipeline and nodes
-        >>> p = PipelineBase()
+        >>> p = Pipeline()
         >>> op1 = ExampleNode('op1')
         >>>
         >>> # Assign input for op1 as pipeline input and add it to pipeline
@@ -564,21 +499,11 @@ class PipelineBase(Graph):
         self._inputs = [i for i in self._inputs if i.downstream_node is not node]
         self._update_fit_transform_signatures()
 
-    @staticmethod
-    def replace_signature(func, sign):
-        def wrapped(*args, **kwargs):
-            return func(*args, **kwargs)
-
-        wrapped.__signature__ = sign
-        wrapped.__doc__ = func.__doc__
-        wrapped.__name__ = func.__name__
-        return wrapped
-
     def _set_fit_signature(self, sign: inspect.Signature):
-        self.fit = MethodType(PipelineBase.replace_signature(PipelineBase.fit, sign), self)
+        self.fit = MethodType(replace_signature(Pipeline.fit, sign), self)
 
     def _set_transform_signature(self, sign: inspect.Signature):
-        self.transform = MethodType(PipelineBase.replace_signature(PipelineBase.transform, sign), self)
+        self.transform = MethodType(replace_signature(Pipeline.transform, sign), self)
 
     def _reset_fit_signature(self):
         self.fit = MethodType(self.__class__.fit, self)
@@ -599,9 +524,14 @@ class PipelineBase(Graph):
 
         original_prams = list(fit_sign.parameters.values())
 
-        new_params_kwargs = [i for i in original_prams if i.kind == inspect.Parameter.KEYWORD_ONLY]
         new_params_pos_only = [i for i in original_prams if i.kind == inspect.Parameter.POSITIONAL_ONLY]
-        new_params_pos = [i for i in original_prams if i.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD]
+        new_params_pos = [i for i in original_prams if
+                          i.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD and
+                          i.default is None]
+        new_params_kwargs = [i for i in original_prams if
+                             i.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD and
+                             i.default is not None]
+        new_params_kwargs_only = [i for i in original_prams if i.kind == inspect.Parameter.KEYWORD_ONLY]
         seen_params = set()
 
         if len(self._inputs) > 0:
@@ -614,15 +544,17 @@ class PipelineBase(Graph):
                     if len(self._inputs) == 1 else inspect.Parameter.KEYWORD_ONLY,
                     default=None)
 
-                if param.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD:
+                if param.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD and param.default is None:
                     new_params_pos.append(param)
+                elif param.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD:
+                    new_params_kwargs.append(param)
                 elif param.kind == inspect.Parameter.KEYWORD_ONLY:
-                    new_params_pos_only.append(param)
+                    new_params_kwargs_only.append(param)
                 else:
                     raise TypeError("Invalid parameter king")
 
                 seen_params.add(inp.arg_name)
-            new_params = new_params_pos_only + new_params_pos + new_params_kwargs
+            new_params = new_params_pos_only + new_params_pos + new_params_kwargs + new_params_kwargs_only
 
             self._set_fit_signature(inspect.Signature(
                 parameters=new_params,
@@ -669,8 +601,9 @@ class PipelineBase(Graph):
             downstream_inputs = downstream.inputs
             if len(downstream_inputs) > 1:
                 raise DaskPipesException(
-                    "Downstream has multiple inputs, cannot infer downstream_slot. "
+                    "{} has multiple inputs, cannot infer downstream_slot. "
                     "Please, provide downstream_slot as one of {}".format(
+                        downstream,
                         [i.name for i in downstream_inputs]))
             downstream_slot = downstream_inputs[0].name
 
@@ -724,9 +657,6 @@ class PipelineBase(Graph):
                     ))
             unseen_inputs.remove(k)
 
-        if len(unseen_inputs) > 0:
-            raise DaskPipesException("Unfilled arguments: {}".format(unseen_inputs))
-
         return rv
 
     @staticmethod
@@ -737,7 +667,7 @@ class PipelineBase(Graph):
         Converts list, tuple or dict to key-value pairs
         makes sanity checks
 
-        :param node_cls: class of node to read transform return annotation from
+        :param node: class of node to read transform return annotation from
         :param output: return value of .transform() method
         :return:
         """
@@ -796,7 +726,7 @@ class PipelineBase(Graph):
         args = self._parse_arguments(*args, **kwargs)
         node_arguments = {op: dict() for op in self.vertices}
         for inp in self._inputs:
-            node_arguments[inp.downstream_node][inp.downstream_slot] = args[inp.arg_name]
+            node_arguments[inp.downstream_node][inp.downstream_slot] = args.get(inp.arg_name, None)
 
         outputs = dict()
 
@@ -836,10 +766,9 @@ class PipelineBase(Graph):
 
         return outputs
 
-    def _fit(self, op, *, run_name=None, **op_args):
+    def _fit(self, op, **op_args):
         """
         Helper function used for fit call and dumping params
-        :param run_name:
         :param op:
         :param op_args:
         :return:
@@ -848,13 +777,12 @@ class PipelineBase(Graph):
         # Fit node
         # ----------------------
         # Make copy of arguments
-        op_args = {k: v.copy() for k, v in op_args.items()}
+        op_args = {k: v.copy() if v is not None else v for k, v in op_args.items()}
         op.fit(**op_args)
 
-    def _transform(self, op, *, run_name=None, **op_args):
+    def _transform(self, op, **op_args):
         """
         Helper function, used for transform call and dumping outputs
-        :param run_name:
         :param op:
         :param op_args:
         :return:
@@ -864,66 +792,43 @@ class PipelineBase(Graph):
         # Transform node
         # ----------------------
         # Make copy of arguments
-        op_args = {k: v.copy() for k, v in op_args.items()}
+        op_args = {k: v.copy() if v is not None else v for k, v in op_args.items()}
 
-        op_result = PipelineBase._parse_node_output(op, op.transform(**op_args))
+        op_result = Pipeline._parse_node_output(op, op.transform(**op_args))
         if len(op_result) == 0:
             raise DaskPipesException("Node {} did not return anything".format(op))
 
-        # ----------------------
-        # Save persist datasets
-        # ----------------------
-        try:
-            self.dump_outputs(op.name, op_result, run_name=run_name)
-        except Exception as ex:
-            raise DaskPipesException("Error saving outputs of {}".format(op)) from ex
-
-        try:
-            op_result = self.load_outputs(op.name, run_name=run_name)
-        except Exception as ex:
-            raise DaskPipesException("Error loading outputs of {}".format(op)) from ex
-
-        if len(op_result) == 0:
-            raise DaskPipesException("Error loading outputs {}. got empty dict".format(op.name))
         return op_result
 
-    def fit(self, *args, run_name=None, **kwargs):
+    def fit(self, *args, **kwargs):
         """
         Main method for fitting pipeline.
         Sequentially calls fit and transform in width-first order
-        :param run_name: name of run for logging and dumping data
         :param args: pipeline positional input to pass to input nodes
         :param kwargs: pipeline key-word input to  pass to input nodes
         :return: self
         """
 
-        if run_name is not None and not isinstance(run_name, str):
-            raise TypeError("run_name must be str or None")
-
         def func(op, has_downstream, **op_args):
-            self._fit(op, run_name=run_name, **op_args)
+            self._fit(op, **op_args)
             if has_downstream:
-                rv = self._transform(op, run_name=run_name, **op_args)
+                rv = self._transform(op, **op_args)
                 return rv
 
         self._iterate_graph(func, *args, **kwargs)
         return self
 
-    def transform(self, *args, run_name=None, **kwargs):
+    def transform(self, *args, **kwargs):
         """
         Method for transforming based on previously fitted parameters
-        :param run_name: name of run for logging and dumping data
         :param args: pipeline positional input to pass to input nodes
         :param kwargs: pipeline key-word input to  pass to input nodes
         :return: dictionary of datasets, or single dataset.
         Output of nodes that was not piped anywhere
         """
 
-        if run_name is not None and not isinstance(run_name, str):
-            raise TypeError("run_name must be str or None")
-
         def func(op, has_downstream, **op_args):
-            return self._transform(op, run_name=run_name, **op_args)
+            return self._transform(op, **op_args)
 
         outputs = self._iterate_graph(func, *args, **kwargs)
         rv = {'{}_{}'.format(k[0].name, k[1]): v for k, v in outputs.items()}
