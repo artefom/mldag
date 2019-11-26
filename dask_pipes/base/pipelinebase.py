@@ -3,6 +3,7 @@ from ..exceptions import DaskPipesException
 from typing import Any, Dict, List, Optional
 from types import MethodType
 from collections import namedtuple
+from sklearn.base import BaseEstimator
 import inspect
 from ..utils import (ArgumentDescription,
                      get_arguments_description,
@@ -11,8 +12,6 @@ from ..utils import (ArgumentDescription,
                      assert_subclass)
 
 __all__ = ['NodeConnection', 'NodeBase', 'PipelineBase', 'NodeBaseMeta', 'ExampleNode']
-
-SLOT_UNNAMED = '<unnamed>'
 
 NodeInput = namedtuple("NodeInput", ['input_arg', 'upstream_output_name', 'upstream_node'])
 
@@ -130,9 +129,9 @@ class NodeBaseMeta(type):
         return super().__new__(mcs, name, bases, attrs)
 
 
-class NodeBase(VertexBase, metaclass=NodeBaseMeta):
+class NodeBase(VertexBase, BaseEstimator, metaclass=NodeBaseMeta):
 
-    def __init__(self, name):
+    def __init__(self, name=None):
         super().__init__()
         self.name = name
 
@@ -282,7 +281,7 @@ class NodeBase(VertexBase, metaclass=NodeBaseMeta):
         >>> op1.set_downstream(op2)
         >>> op1.fit(ds)
         >>>
-        >>> print(p.outputs) # ['op3_<unnamed>'] '<unnamed>' is because transform has not defined result annotations
+        >>> print(p.outputs) # ['op3_result'] 'result' is because transform has not defined result annotations
         >>> # since pipeline has single input, it's allowed to pass ds as positional
         >>> p.transform(ds) # since output of pipeline is single dataset, returns ds.
         >>> # If multiple datasets are returned, returns dictionary {dataset_name: dataset} (see p.outputs)
@@ -302,10 +301,17 @@ class NodeBase(VertexBase, metaclass=NodeBaseMeta):
         raise NotImplementedError()
 
     def __repr__(self):
+        if self.name is None:
+            return '<Unnamed {} at {}>'.format(self.__class__.__name__, hex(id(self)))
+
         return '<{}: {}>'.format(self.__class__.__name__, self.name)
 
 
 class ExampleNode(NodeBase):
+
+    def __init__(self, name=None):
+        super().__init__(name=name)
+        self.params = None
 
     def fit(self, dataset):
         """
@@ -314,7 +320,6 @@ class ExampleNode(NodeBase):
         :return: Parameters passed to .transform
         """
         self.params = {'a': 1}
-        print("Fitting {}".format(dataset))
 
     def transform(self, dataset):
         """
@@ -345,6 +350,9 @@ class PipelineBase(Graph):
 
         self.node_dict = dict()
 
+        # For naming unnamed nodes
+        self.node_name_counter = 0
+
     def add_vertex(self, node: NodeBase, vertex_id=None):
         """
         Add node to current pipeline
@@ -353,6 +361,11 @@ class PipelineBase(Graph):
         :type vertex_id: int
         :return:
         """
+        if node.name is None:
+            while '{}_unnamed{}'.format(node.__class__.__name__, self.node_name_counter) in self.node_dict:
+                self.node_name_counter += 1
+            node.name = '{}_unnamed{}'.format(node.__class__.__name__, self.node_name_counter)
+            self.node_name_counter += 1
         if node.name in self.node_dict:
             if self.node_dict[node.name] is not node:
                 raise DaskPipesException("Duplicate name for node {}".format(node))
@@ -365,6 +378,8 @@ class PipelineBase(Graph):
         :param node: node to remove (must be in current pipeline)
         :return:
         """
+        if node.name is None:
+            raise DaskPipesException("Node is unnamed")
         if node.graph is not self:
             raise DaskPipesException("Node does not belong to pipeline")
         if node.name in self.node_dict:
@@ -515,6 +530,8 @@ class PipelineBase(Graph):
             suffix = ''
 
         node_inputs = node.inputs
+        if len(node_inputs) == 0:
+            raise DaskPipesException("{} does not have any inputs.".format(node))
         for op_input in node_inputs:
             downstream_slot = op_input.name
 
@@ -762,6 +779,8 @@ class PipelineBase(Graph):
         if downstream_op not in node_arguments:
             raise DaskPipesException("Pipeline does not have {}".format(downstream_op))
         if edge.upstream_slot not in op_result:
+            if len(op_result) == 0:
+                raise DaskPipesException("Node {} did not return anything!".format(op))
             raise DaskPipesException(
                 "Node {} did not return expected {}; "
                 "recieved {}".format(op, edge.upstream_slot, list(op_result.keys())))
@@ -884,7 +903,8 @@ class PipelineBase(Graph):
         def func(op, has_downstream, **op_args):
             self._fit(op, run_name=run_name, **op_args)
             if has_downstream:
-                return self._transform(op, run_name=run_name, **op_args)
+                rv = self._transform(op, run_name=run_name, **op_args)
+                return rv
 
         self._iterate_graph(func, *args, **kwargs)
         return self

@@ -93,11 +93,14 @@ def load_dict(path, suffix) -> Dict[str, Any]:
     for fname in os.listdir(path):
         file_path = os.path.join(path, fname)
         file_name, file_ext = os.path.splitext(fname)
-        if len(suffix) >= len(file_name):
-            continue
-        if file_name[-len(suffix):] != suffix:
-            continue
-        resource_name = file_name[:-len(suffix)]
+        if len(suffix) > 0:
+            if len(suffix) >= len(file_name):
+                continue
+            if file_name[-len(suffix):] != suffix:
+                continue
+            resource_name = file_name[:-len(suffix)]
+        else:
+            resource_name = file_name
 
         if file_ext not in ext_reader_mapping:
             raise DaskPipesException("Unknown extension: {}".format(file_ext))

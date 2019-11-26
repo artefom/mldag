@@ -20,7 +20,7 @@ VALIDATE_SUBCLASSES = False
 ArgumentDescription = namedtuple("ArgumentDescription", ['name', 'type', 'description'])
 ReturnDescription = namedtuple("ArgumentDescription", ['name', 'type', 'description'])
 
-RETURN_UNNAMED = '<unnamed>'
+RETURN_UNNAMED = 'result'
 
 
 def is_categorical(type: Type) -> bool:
