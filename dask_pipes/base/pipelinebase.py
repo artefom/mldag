@@ -10,24 +10,24 @@ from ..utils import (ArgumentDescription,
                      ReturnDescription,
                      assert_subclass)
 
-__all__ = ['OperatorConnection', 'OperatorBase', 'PipelineBase', 'OperatorBaseMeta', 'ExampleOperator']
+__all__ = ['NodeConnection', 'NodeBase', 'PipelineBase', 'NodeBaseMeta', 'ExampleNode']
 
 SLOT_UNNAMED = '<unnamed>'
 
-OperatorInput = namedtuple("OperatorInput", ['input_arg', 'upstream_output_name', 'upstream_operator'])
+NodeInput = namedtuple("NodeInput", ['input_arg', 'upstream_output_name', 'upstream_node'])
 
-PipelineInput = namedtuple("PipelineInput", ['arg_name', 'downstream_slot', 'downstream_operator'])
-PipelineOutput = namedtuple("PipelineOutput", ['output_name', 'upstream_slot', 'upstream_operator'])
+PipelineInput = namedtuple("PipelineInput", ['arg_name', 'downstream_slot', 'downstream_node'])
+PipelineOutput = namedtuple("PipelineOutput", ['output_name', 'upstream_slot', 'upstream_node'])
 
 
-class OperatorConnection(EdgeBase):
+class NodeConnection(EdgeBase):
 
     def __init__(self, upstream, downstream, upstream_slot: str, downstream_slot: str):
         """
         :param upstream:
-        :type upstream: OperatorBase
+        :type upstream: NodeBase
         :param downstream:
-        :type downstream: OperatorBase
+        :type downstream: NodeBase
         :param upstream_slot:
         :param downstream_slot:
         """
@@ -51,8 +51,8 @@ class OperatorConnection(EdgeBase):
         self.downstream_slot = downstream_slot
 
     @staticmethod
-    def validate(operator_con):
-        assert_subclass(operator_con, OperatorConnection)
+    def validate(node_con):
+        assert_subclass(node_con, NodeConnection)
 
     def to_dict(self):
         d = super().to_dict()
@@ -75,14 +75,14 @@ class OperatorConnection(EdgeBase):
                                                   self.downstream_slot)
 
 
-class OperatorBaseMeta(type):
+class NodeBaseMeta(type):
 
     @property
     def outputs(self) -> List[ReturnDescription]:
         """
-        Outputs of an operator (parses annotation of .transform function)
+        Outputs of an node (parses annotation of .transform function)
 
-        Since this is defined in meta, we can get operator outputs just based on it's class
+        Since this is defined in meta, we can get node outputs just based on it's class
         :return: List of named tuples 'ReturnDescription' with argument name, type and description
         """
         ret_descr = get_return_description(getattr(self, 'transform'))
@@ -91,10 +91,10 @@ class OperatorBaseMeta(type):
     @property
     def inputs(self) -> List[ArgumentDescription]:
         """
-        Inputs of an operator - parameters of self.fit function
+        Inputs of an node - parameters of self.fit function
         must be equal to parameters of self.transform
 
-        Since this is defined in meta, we can get operator outputs just based on it's class
+        Since this is defined in meta, we can get node outputs just based on it's class
         :return:
         """
         arg_descr = get_arguments_description(getattr(self, 'fit'))
@@ -130,7 +130,7 @@ class OperatorBaseMeta(type):
         return super().__new__(mcs, name, bases, attrs)
 
 
-class OperatorBase(VertexBase, metaclass=OperatorBaseMeta):
+class NodeBase(VertexBase, metaclass=NodeBaseMeta):
 
     def __init__(self, name):
         super().__init__()
@@ -139,10 +139,10 @@ class OperatorBase(VertexBase, metaclass=OperatorBaseMeta):
     @property
     def inputs(self) -> List[ArgumentDescription]:
         """
-        Inputs of an operator - parameters of self.fit function
+        Inputs of an node - parameters of self.fit function
         must be equal to parameters of self.transform
 
-        This duplicates OperatorBaseMeta's inputs property for convenience
+        This duplicates NodeBaseMeta's inputs property for convenience
         (being able to do obj.inputs instead of obj.__class__.inputs)
         :return: List of named tuples 'ReturnDescription' with argument name, type and description
         """
@@ -151,38 +151,38 @@ class OperatorBase(VertexBase, metaclass=OperatorBaseMeta):
     @property
     def outputs(self) -> List[ReturnDescription]:
         """
-        Outputs of an operator (parses annotation of .transform function)
+        Outputs of an node (parses annotation of .transform function)
 
-        This duplicates OperatorBaseMeta's inputs property for convenience
+        This duplicates NodeBaseMeta's inputs property for convenience
         (being able to do obj.outputs instead of obj.__class__.outputs)
         :return:
         """
         return self.__class__.outputs
 
     @staticmethod
-    def validate(operator):
+    def validate(node):
         """
         Used by Graph to validate vertices when adding them
-        Checks that operator is valid OperatorBase
-            > check that operator is subclass of OperatorBase
-        :param operator: Any
+        Checks that node is valid NodeBase
+            > check that node is subclass of NodeBase
+        :param node: Any
         :return:
         """
-        assert_subclass(operator, OperatorBase)
+        assert_subclass(node, NodeBase)
 
     def set_upstream(self, other,
                      upstream_slot: Optional[str] = None,
                      downstream_slot: Optional[str] = None):
         """
-        Make other Operator upstream of current
-        Pipes output of specific slot of upstream operator to specific slot of current operator
+        Make other Node upstream of current
+        Pipes output of specific slot of upstream node to specific slot of current node
         Automatically assignes other or self to pipeline of one of them is not assigned
 
         Example:
-        >>> # Construct pipeline and operators
+        >>> # Construct pipeline and nodes
         >>> p = PipelineBase()
-        >>> op1 = ExampleOperator('op1')
-        >>> op2 = ExampleOperator('op2')
+        >>> op1 = ExampleNode('op1')
+        >>> op2 = ExampleNode('op2')
         >>>
         >>> # Assign input for op1 as pipeline input and add it to pipeline
         >>> p.set_input(op1)
@@ -191,12 +191,12 @@ class OperatorBase(VertexBase, metaclass=OperatorBaseMeta):
         >>> # input ->> op1 ->> op2
         >>> op2.set_upstream(op1)
 
-        :param other: Operator to set upstream
-        :type other: OperatorBase
+        :param other: Node to set upstream
+        :type other: NodeBase
         :param upstream_slot: upstream's output (name of one of other.outputs) or None
         if None is passed and upstream has only one output, automatically deducts upstream_slot
         :param downstream_slot: this input slot (name of one of self.inputs) or None
-        if None is passed and this operator has only one input, automatically deducts upstream_slot
+        if None is passed and this node has only one input, automatically deducts upstream_slot
         :return: None
         """
         super().set_upstream(other, upstream_slot=upstream_slot, downstream_slot=downstream_slot)
@@ -205,15 +205,15 @@ class OperatorBase(VertexBase, metaclass=OperatorBaseMeta):
                        upstream_slot: Optional[str] = None,
                        downstream_slot: Optional[str] = None, ):
         """
-        Make other Operator upstream of current
-        Pipes output of specific slot of upstream operator to specific slot of current operator
+        Make other Node upstream of current
+        Pipes output of specific slot of upstream node to specific slot of current node
         Automatically assignes other or self to pipeline of one of them is not assigned
 
         Example:
-        >>> # Construct pipeline and operators
+        >>> # Construct pipeline and nodes
         >>> p = PipelineBase()
-        >>> op1 = ExampleOperator('op1')
-        >>> op2 = ExampleOperator('op2')
+        >>> op1 = ExampleNode('op1')
+        >>> op2 = ExampleNode('op2')
         >>>
         >>> # Assign input for op1 as pipeline input and add it to pipeline
         >>> p.set_input(op1)
@@ -222,12 +222,12 @@ class OperatorBase(VertexBase, metaclass=OperatorBaseMeta):
         >>> # input ->> op1 ->> op2
         >>> op1.set_downstream(op2)
 
-        :param other: Operator to set downstream
-        :type other: OperatorBase
-        :param upstream_slot: this operator output (name of one of self.outputs) or None
-        if None is passed and this operator has only one output, automatically deducts upstream_slot
+        :param other: Node to set downstream
+        :type other: NodeBase
+        :param upstream_slot: this node output (name of one of self.outputs) or None
+        if None is passed and this node has only one output, automatically deducts upstream_slot
         :param downstream_slot: downstream's input slot (name of one of other.inputs) or None
-        if None is passed and downstream operator has only one input, automatically deducts upstream_slot
+        if None is passed and downstream node has only one input, automatically deducts upstream_slot
         :return: None
         """
         super().set_downstream(other, upstream_slot=upstream_slot, downstream_slot=downstream_slot)
@@ -238,19 +238,19 @@ class OperatorBase(VertexBase, metaclass=OperatorBaseMeta):
         To be implemented by subclass pipelines
 
         Signature of this function is changed dynamically.
-        As user sets pipeline input operators, they are added to parameters of fit
+        As user sets pipeline input nodes, they are added to parameters of fit
 
         Important!
-        Reason behind returning dict instead of storing fitted data inside operator:
-        1. One operator can be fitted multiple time in one pipeline
+        Reason behind returning dict instead of storing fitted data inside node:
+        1. One node can be fitted multiple time in one pipeline
         2. Do not use pickle to save model parameters. instead, serialize them explicitly to yaml or csv files
 
         # Example:
         >>> import pandas as pd
         >>> ds = pd.DataFrame([[1,2,3]])
         >>> p = PipelineBase()
-        >>> op1 = ExampleOperator('op1')
-        >>> op2 = ExampleOperator('op2')
+        >>> op1 = ExampleNode('op1')
+        >>> op2 = ExampleNode('op2')
         >>> p.set_input(op1)
         >>> op1.set_downstream(op2)
         >>> print(p.inputs) # ['dataset']
@@ -270,14 +270,14 @@ class OperatorBase(VertexBase, metaclass=OperatorBaseMeta):
         To be implemented by subclass pipelines
 
         Signature of this function is changed dynamically.
-        As user sets pipeline input operators, they are added to parameters of transform
+        As user sets pipeline input nodes, they are added to parameters of transform
 
         # Example
         >>> import pandas as pd
         >>> ds = pd.DataFrame([[1,2,3]])
         >>> p = PipelineBase()
-        >>> op1 = ExampleOperator('op1')
-        >>> op2 = ExampleOperator('op2')
+        >>> op1 = ExampleNode('op1')
+        >>> op2 = ExampleNode('op2')
         >>> p.set_input(op1)
         >>> op1.set_downstream(op2)
         >>> op1.fit(ds)
@@ -295,9 +295,9 @@ class OperatorBase(VertexBase, metaclass=OperatorBaseMeta):
         This is for safety purposes, because order of inputs can be changed dynamically during runtime
         :param kwargs: placeholder for pipeline inputs.
         Key-word inputs to pipeline
-        name of argument is equal to input operators' input slots + optional suffix
-        single key-word argument can be piped to multiple operators
-        :return: Operator outputs that were not piped anywhere
+        name of argument is equal to input nodes' input slots + optional suffix
+        single key-word argument can be piped to multiple nodes
+        :return: Node outputs that were not piped anywhere
         """
         raise NotImplementedError()
 
@@ -305,7 +305,7 @@ class OperatorBase(VertexBase, metaclass=OperatorBaseMeta):
         return '<{}: {}>'.format(self.__class__.__name__, self.name)
 
 
-class ExampleOperator(OperatorBase):
+class ExampleNode(NodeBase):
 
     def fit(self, dataset):
         """
@@ -329,12 +329,12 @@ class ExampleOperator(OperatorBase):
 
 class PipelineBase(Graph):
     """
-    Pipeline is a graph structure, containing relationships between OperatorBase (vertices)
-    with OperatorConnection as edges
+    Pipeline is a graph structure, containing relationships between NodeBase (vertices)
+    with NodeConnection as edges
 
     Defines fit and transform methods which iterate vertices in width-first order,
-    calling fit() and transform() methods of operators and
-    piping outputs of upstream operators to inputs of downstream operators
+    calling fit() and transform() methods of nodes and
+    piping outputs of upstream nodes to inputs of downstream nodes
     """
 
     def __init__(self):
@@ -343,55 +343,55 @@ class PipelineBase(Graph):
         # Pipeline inputs. use set_input to add input
         self._inputs: List[PipelineInput] = list()
 
-        self.operator_dict = dict()
+        self.node_dict = dict()
 
-    def add_vertex(self, operator: OperatorBase, vertex_id=None):
+    def add_vertex(self, node: NodeBase, vertex_id=None):
         """
-        Add operator to current pipeline
-        :param operator: operator to add
-        :param vertex_id: operator's id or None (if None - autoincrement) (used for deserialization from disk)
+        Add node to current pipeline
+        :param node: node to add
+        :param vertex_id: node's id or None (if None - autoincrement) (used for deserialization from disk)
         :type vertex_id: int
         :return:
         """
-        if operator.name in self.operator_dict:
-            if self.operator_dict[operator.name] is not operator:
-                raise DaskPipesException("Duplicate name for operator {}".format(operator))
-        self.operator_dict[operator.name] = operator
-        super().add_vertex(operator, vertex_id=vertex_id)
+        if node.name in self.node_dict:
+            if self.node_dict[node.name] is not node:
+                raise DaskPipesException("Duplicate name for node {}".format(node))
+        self.node_dict[node.name] = node
+        super().add_vertex(node, vertex_id=vertex_id)
 
-    def remove_vertex(self, operator: OperatorBase) -> VertexBase:
+    def remove_vertex(self, node: NodeBase) -> VertexBase:
         """
-        Remove operator from pipeline
-        :param operator: operator to remove (must be in current pipeline)
+        Remove node from pipeline
+        :param node: node to remove (must be in current pipeline)
         :return:
         """
-        if operator.graph is not self:
-            raise DaskPipesException("Operator does not belong to pipeline")
-        if operator.name in self.operator_dict:
-            if self.operator_dict[operator.name] is not operator:
-                raise ValueError("Operator does not equal to operator_dict['{}']".format(operator.name))
-            del self.operator_dict[operator.name]
+        if node.graph is not self:
+            raise DaskPipesException("Node does not belong to pipeline")
+        if node.name in self.node_dict:
+            if self.node_dict[node.name] is not node:
+                raise ValueError("Node does not equal to node_dict['{}']".format(node.name))
+            del self.node_dict[node.name]
         else:
-            raise ValueError("Invalid operator name")
-        self.remove_input(operator)
-        return super().remove_vertex(operator)
+            raise ValueError("Invalid node name")
+        self.remove_input(node)
+        return super().remove_vertex(node)
 
     @property
     def _outputs(self) -> List[PipelineOutput]:
         """
         Get detailed info about pipeline outputs
-        :return: list out named tuples defining unused operators' outputs. output of .transform() method
+        :return: list out named tuples defining unused nodes' outputs. output of .transform() method
         """
         outputs = []
 
         for v_id, vertex in self._vertices.items():
 
-            vertex: OperatorBase
+            vertex: NodeBase
 
             v_outputs = {i.name for i in vertex.outputs}
 
             for edge in self.get_downstream_edges(vertex):
-                edge: OperatorConnection
+                edge: NodeConnection
                 if edge.upstream_slot in v_outputs:
                     v_outputs.remove(edge.upstream_slot)
                 if len(v_outputs) == 0:
@@ -399,7 +399,7 @@ class PipelineBase(Graph):
 
             for v_out in v_outputs:
                 out = '{}_{}'.format(vertex.name, v_out)
-                outputs.append(PipelineOutput(output_name=out, upstream_slot=v_out, upstream_operator=vertex))
+                outputs.append(PipelineOutput(output_name=out, upstream_slot=v_out, upstream_node=vertex))
 
         return outputs
 
@@ -418,32 +418,32 @@ class PipelineBase(Graph):
     @property
     def outputs(self) -> List[str]:
         """
-        Get human-friendly list of output names of .transform() function without detailed info about operators
-        :return: list of operators's outputs that have no downstream operators. Transform output
+        Get human-friendly list of output names of .transform() function without detailed info about nodes
+        :return: list of nodes's outputs that have no downstream nodes. Transform output
         """
         return [o.output_name for o in self._outputs]
 
     def validate_edge(self, edge):
         """
         Used by base graph class to check if edge can be added to current graph
-        Checks if edge is subclass of OperatorConnection
+        Checks if edge is subclass of NodeConnection
         :param edge:
         :return:
         """
-        OperatorConnection.validate(edge)
+        NodeConnection.validate(edge)
 
     def validate_vertex(self, vertex):
         """
         Used by base graph to check if vertex can be added to current graph
-        Checks if vertex is subclass of OperatorBase
+        Checks if vertex is subclass of NodeBase
         :param vertex:
         :return:
         """
-        OperatorBase.validate(vertex)
+        NodeBase.validate(vertex)
 
     def dump_params(self, vertex_name: str, params: Dict[str, Any], run_name: Optional[str] = None):
         """
-        Save output of operator's fit method somewhere
+        Save output of node's fit method somewhere
         to be implemented in subclasses
         :param run_name: Name of run, specified in fit and transform methods
         :param vertex_name: vertex name, which params we're saving. Can be used to infer filenames
@@ -454,7 +454,7 @@ class PipelineBase(Graph):
 
     def dump_outputs(self, vertex_name: str, outputs: Dict[str, Any], run_name: Optional[str] = None) -> Dict[str, Any]:
         """
-        Save output of operator's transform method somewhere (used to persist dataframes after calculations)
+        Save output of node's transform method somewhere (used to persist dataframes after calculations)
         to be implemented in subclasses
         :param run_name: Name of run, specified in fit and transform methods
         :param vertex_name: Name of vertex which output we're dumping. Can used to infer filenames
@@ -484,67 +484,67 @@ class PipelineBase(Graph):
         """
         raise NotImplementedError()
 
-    def set_input(self, operator: OperatorBase, suffix=None):
+    def set_input(self, node: NodeBase, suffix=None):
         """
-        Register operator as pipeline's input.
-        All operator inputs should be passed in fit function
-        by default, uses fit argument names equal to operator input arguments.
+        Register node as pipeline's input.
+        All node inputs should be passed in fit function
+        by default, uses fit argument names equal to node input arguments.
 
         Caution:
-        If multiple operators which have same input names are set as input,
-        pipeline will pass data from argument to multiple operators
-        suffix can be used to differentiate inputs for operators with same argument names
+        If multiple nodes which have same input names are set as input,
+        pipeline will pass data from argument to multiple nodes
+        suffix can be used to differentiate inputs for nodes with same argument names
 
         Example:
-        >>> # Construct pipeline and operators
+        >>> # Construct pipeline and nodes
         >>> p = PipelineBase()
-        >>> op1 = ExampleOperator('op1')
+        >>> op1 = ExampleNode('op1')
         >>>
         >>> # Assign input for op1 as pipeline input and add it to pipeline
         >>> p.set_input(op1)
         >>> # p.fit signature changed
         >>> # also, p.inputs now returns ['dataset']
 
-        :param operator: operator to set as input
-        :param suffix: suffix to add to operator's inputs before setting them as pipeline inputs
+        :param node: node to set as input
+        :param suffix: suffix to add to node's inputs before setting them as pipeline inputs
         :return:
         """
-        self.validate_vertex(operator)
+        self.validate_vertex(node)
 
         if suffix is None:
             suffix = ''
 
-        operator_inputs = operator.inputs
-        for op_input in operator_inputs:
+        node_inputs = node.inputs
+        for op_input in node_inputs:
             downstream_slot = op_input.name
 
             if downstream_slot is None:
-                operator_inputs = operator.inputs
-                if len(operator_inputs) > 1:
+                node_inputs = node.inputs
+                if len(node_inputs) > 1:
                     raise DaskPipesException(
                         "{} has multiple inputs, "
-                        "downstream_slot must be one of {}".format(operator, [i.name for i in operator_inputs]))
-                downstream_slot = operator_inputs[0].name
+                        "downstream_slot must be one of {}".format(node, [i.name for i in node_inputs]))
+                downstream_slot = node_inputs[0].name
 
             arg_name = '{}{}'.format(downstream_slot, suffix)
 
             self._inputs.append(PipelineInput(arg_name=arg_name,
                                               downstream_slot=downstream_slot,
-                                              downstream_operator=operator))
-        operator.graph = self
+                                              downstream_node=node))
+        node.graph = self
 
         self._update_fit_transform_signatures()
 
-    def remove_input(self, operator: OperatorBase):
+    def remove_input(self, node: NodeBase):
         """
-        Unset operator as pipeline output
-        :param operator: operator to unset as output
+        Unset node as pipeline output
+        :param node: node to unset as output
         :return:
         """
-        self.validate_vertex(operator)
+        self.validate_vertex(node)
 
         # Find inputs to remove
-        self._inputs = [i for i in self._inputs if i.downstream_operator is not operator]
+        self._inputs = [i for i in self._inputs if i.downstream_node is not node]
         self._update_fit_transform_signatures()
 
     @staticmethod
@@ -571,7 +571,7 @@ class PipelineBase(Graph):
 
     def _update_fit_transform_signatures(self):
         """
-        Called when input operator is added or removed.
+        Called when input node is added or removed.
         Infers and updates signatures of fit and transform methods for user-friendly hints
         :return:
         """
@@ -619,22 +619,22 @@ class PipelineBase(Graph):
             self._reset_transform_signature()
 
     def connect(self,
-                upstream: OperatorBase,
-                downstream: OperatorBase,
+                upstream: NodeBase,
+                downstream: NodeBase,
                 upstream_slot: Optional[str] = None,
-                downstream_slot: Optional[str] = None) -> OperatorConnection:
+                downstream_slot: Optional[str] = None) -> NodeConnection:
         """
-        General method for connecting tto operators
+        General method for connecting tto nodes
         Creates directed connection with upstream and downstream slots
 
         if connection between slots was already made, raises DaskPipesException
         if downstream_slot already has piped input, raises DaskPipesException,
         since multiple inputs for one slot are not allowed
 
-        :param upstream: operator to set upstream
-        :param downstream: operator to set downstream
-        :param upstream_slot: slot of upstream operator to pass to downstream
-        :param downstream_slot: slot of downstream operator to receive data into
+        :param upstream: node to set upstream
+        :param downstream: node to set downstream
+        :param upstream_slot: slot of upstream node to pass to downstream
+        :param downstream_slot: slot of downstream node to receive data into
         :return:
         """
 
@@ -658,17 +658,17 @@ class PipelineBase(Graph):
             downstream_slot = downstream_inputs[0].name
 
         # Create edge
-        edge = OperatorConnection(upstream=upstream,
-                                  downstream=downstream,
-                                  upstream_slot=upstream_slot,
-                                  downstream_slot=downstream_slot)
+        edge = NodeConnection(upstream=upstream,
+                              downstream=downstream,
+                              upstream_slot=upstream_slot,
+                              downstream_slot=downstream_slot)
         return self.add_edge(edge)
 
     # Change signature of functions
-    def add_edge(self, op_connection: OperatorConnection, edge_id=None) -> OperatorConnection:
+    def add_edge(self, op_connection: NodeConnection, edge_id=None) -> NodeConnection:
         """
-        Add OperatorConnection to current pipeline
-        op_connection must already have assigned upstream and downstream operators
+        Add NodeConnection to current pipeline
+        op_connection must already have assigned upstream and downstream nodes
         :param op_connection: connection to add
         :param edge_id: integer id of edge, auto-increment if None (used for deserialization from disk)
         :return:
@@ -681,7 +681,7 @@ class PipelineBase(Graph):
         expected_inputs = {i.arg_name for i in self._inputs}
         if len(expected_inputs) == 0 and (len(args) > 0 or len(kwargs) > 0):
             raise DaskPipesException(
-                "{} Does not have any inputs. (used .set_input(op) to set operators as input)".format(self))
+                "{} Does not have any inputs. (used .set_input(op) to set nodes as input)".format(self))
 
         unseen_inputs = {i for i in expected_inputs}
 
@@ -713,18 +713,18 @@ class PipelineBase(Graph):
         return rv
 
     @staticmethod
-    def _parse_operator_output(operator, output):
+    def _parse_node_output(node, output):
         """
         Get dictionary of key-values from return of function
 
         Converts list, tuple or dict to key-value pairs
         makes sanity checks
 
-        :param operator_cls: class of operator to read transform return annotation from
+        :param node_cls: class of node to read transform return annotation from
         :param output: return value of .transform() method
         :return:
         """
-        expected_result: List[ReturnDescription] = operator.outputs
+        expected_result: List[ReturnDescription] = node.outputs
         expected_keys = [i.name for i in expected_result]
         if not isinstance(output, list) and not isinstance(output, tuple) and not isinstance(output, dict):
             output = (output,)
@@ -734,7 +734,7 @@ class PipelineBase(Graph):
             if len(output) != len(expected_result):
                 raise DaskPipesException(
                     "{}.transform result length does not match expected. Expected {}, got {}".format(
-                        operator,
+                        node,
                         ['{}: {}'.format(i.name, i.type) for i in expected_result],
                         [i.__class__.__name__ for i in output]
                     ))
@@ -745,7 +745,7 @@ class PipelineBase(Graph):
             if set(expected_keys) != got_keys:
                 raise DaskPipesException(
                     "{}.transform result does not match expected. Expected keys: {}, received: {}".format(
-                        operator,
+                        node,
                         expected_keys, got_keys
                     ))
         else:
@@ -753,17 +753,17 @@ class PipelineBase(Graph):
 
         return output
 
-    def _check_arguements(self, op, edge, operator_arguments, downstream_op, op_result):
-        if edge.downstream_slot in operator_arguments[downstream_op]:
+    def _check_arguements(self, op, edge, node_arguments, downstream_op, op_result):
+        if edge.downstream_slot in node_arguments[downstream_op]:
             raise DaskPipesException(
                 "Duplicate argument for {}['{}']. "
                 "Already contains {}".format(downstream_op, edge.downstream_slot,
-                                             operator_arguments[downstream_op][edge.downstream_slot]))
-        if downstream_op not in operator_arguments:
+                                             node_arguments[downstream_op][edge.downstream_slot]))
+        if downstream_op not in node_arguments:
             raise DaskPipesException("Pipeline does not have {}".format(downstream_op))
         if edge.upstream_slot not in op_result:
             raise DaskPipesException(
-                "Operator {} did not return expected {}; "
+                "Node {} did not return expected {}; "
                 "recieved {}".format(op, edge.upstream_slot, list(op_result.keys())))
 
     def _iterate_graph(self, func, *args, **kwargs):
@@ -775,18 +775,18 @@ class PipelineBase(Graph):
         :return:
         """
         args = self._parse_arguments(*args, **kwargs)
-        operator_arguments = {op: dict() for op in self.vertices}
+        node_arguments = {op: dict() for op in self.vertices}
         for inp in self._inputs:
-            operator_arguments[inp.downstream_operator][inp.downstream_slot] = args[inp.arg_name]
+            node_arguments[inp.downstream_node][inp.downstream_slot] = args[inp.arg_name]
 
         outputs = dict()
 
         for op in VertexWidthFirst(self):
-            op: OperatorBase
-            op_args = operator_arguments[op]
+            op: NodeBase
+            op_args = node_arguments[op]
 
             if len(op_args) == 0:
-                raise DaskPipesException("No input for operator {}".format(op))
+                raise DaskPipesException("No input for node {}".format(op))
 
             downstream_edges = self.get_downstream_edges(op)
             has_downstream = len(downstream_edges) > 0
@@ -805,12 +805,12 @@ class PipelineBase(Graph):
 
             # Get downstream edges
             for edge in downstream_edges:
-                downstream_op: OperatorBase = edge.downstream
-                edge: OperatorConnection
-                self._check_arguements(op, edge, operator_arguments, downstream_op, op_result)
+                downstream_op: NodeBase = edge.downstream
+                edge: NodeConnection
+                self._check_arguements(op, edge, node_arguments, downstream_op, op_result)
                 if edge.upstream_slot in unused_output:
                     unused_output.remove(edge.upstream_slot)
-                operator_arguments[downstream_op][edge.downstream_slot] = op_result[edge.upstream_slot]
+                node_arguments[downstream_op][edge.downstream_slot] = op_result[edge.upstream_slot]
 
             for upstream_slot in unused_output:
                 outputs[(op, upstream_slot)] = op_result[upstream_slot]
@@ -826,7 +826,7 @@ class PipelineBase(Graph):
         :return:
         """
         # ----------------------
-        # Fit operator
+        # Fit node
         # ----------------------
         # Make copy of arguments
         op_args = {k: v.copy() for k, v in op_args.items()}
@@ -842,14 +842,14 @@ class PipelineBase(Graph):
         """
 
         # ----------------------
-        # Transform operator
+        # Transform node
         # ----------------------
         # Make copy of arguments
         op_args = {k: v.copy() for k, v in op_args.items()}
 
-        op_result = PipelineBase._parse_operator_output(op, op.transform(**op_args))
+        op_result = PipelineBase._parse_node_output(op, op.transform(**op_args))
         if len(op_result) == 0:
-            raise DaskPipesException("Operator {} did not return anything".format(op))
+            raise DaskPipesException("Node {} did not return anything".format(op))
 
         # ----------------------
         # Save persist datasets
@@ -873,8 +873,8 @@ class PipelineBase(Graph):
         Main method for fitting pipeline.
         Sequentially calls fit and transform in width-first order
         :param run_name: name of run for logging and dumping data
-        :param args: pipeline positional input to pass to input operators
-        :param kwargs: pipeline key-word input to  pass to input operators
+        :param args: pipeline positional input to pass to input nodes
+        :param kwargs: pipeline key-word input to  pass to input nodes
         :return: self
         """
 
@@ -893,10 +893,10 @@ class PipelineBase(Graph):
         """
         Method for transforming based on previously fitted parameters
         :param run_name: name of run for logging and dumping data
-        :param args: pipeline positional input to pass to input operators
-        :param kwargs: pipeline key-word input to  pass to input operators
+        :param args: pipeline positional input to pass to input nodes
+        :param kwargs: pipeline key-word input to  pass to input nodes
         :return: dictionary of datasets, or single dataset.
-        Output of operators that was not piped anywhere
+        Output of nodes that was not piped anywhere
         """
 
         if run_name is not None and not isinstance(run_name, str):
