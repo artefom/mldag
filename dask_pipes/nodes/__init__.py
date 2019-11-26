@@ -7,6 +7,9 @@ import inspect
 
 
 class NodeWrapper(NodeBase):
+    """
+    Wraps BaseEstimator for use in pipeline
+    """
 
     def __init__(self, name=None, estimator=None):
         super().__init__(name)
@@ -31,24 +34,29 @@ class NodeWrapper(NodeBase):
                 parameters=list(fit_sign.parameters.values()),
                 return_annotation=NodeWrapper
             )
-            self._set_fit_signature(fit_sign)
-            self._set_transform_signature(inspect.signature(estimator.transform.__func__))
+            self._set_fit_signature(fit_sign, doc=estimator.fit.__doc__)
+            self._set_transform_signature(inspect.signature(estimator.transform.__func__),
+                                          doc=estimator.transform.__doc__)
+            self.__doc__ = estimator.__doc__
         else:
+            self.__doc__ = self.__class__.__doc__
             self._reset_transform_signature()
             self._reset_fit_signature()
         self._estimator = estimator
 
-    def _set_fit_signature(self, sign: inspect.Signature):
-        self.fit = MethodType(replace_signature(self.__class__.fit, sign), self)
+    def _set_fit_signature(self, sign: inspect.Signature, doc=None):
+        self.fit = MethodType(replace_signature(self.__class__.fit, sign, doc=doc), self)
 
-    def _set_transform_signature(self, sign: inspect.Signature):
-        self.transform = MethodType(replace_signature(self.__class__.transform, sign), self)
+    def _set_transform_signature(self, sign: inspect.Signature, doc=None):
+        self.transform = MethodType(replace_signature(self.__class__.transform, sign, doc=doc), self)
 
     def _reset_fit_signature(self):
         self.fit = MethodType(self.__class__.fit, self)
+        self.fit.__doc__ = self.__class__.fit.__doc__
 
     def _reset_transform_signature(self):
         self.transform = MethodType(self.__class__.transform, self)
+        self.transform.__doc__ = self.__class__.transform.__doc__
 
     def __repr__(self):
         if self._estimator is None:

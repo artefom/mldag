@@ -23,12 +23,12 @@ ReturnDescription = namedtuple("ArgumentDescription", ['name', 'type', 'descript
 RETURN_UNNAMED = 'result'
 
 
-def replace_signature(func, sign):
+def replace_signature(func, sign, doc=None):
     def wrapped(*args, **kwargs):
         return func(*args, **kwargs)
 
     wrapped.__signature__ = sign
-    wrapped.__doc__ = func.__doc__
+    wrapped.__doc__ = doc or func.__doc__
     wrapped.__name__ = func.__name__
     return wrapped
 
