@@ -121,7 +121,9 @@ class SelectDtypes(NodeBase):
         except TypeError:
             raise DaskPipesException("Expected list; received {}".format(arr.__class__.__name__))
 
-        for k in arr:
+        for k in it:
+            if arr == 'str':
+                raise DaskPipesException("Cannot select str columns, 'str_or_na' or 'object' instead")
             if k is not None and k not in SelectDtypes.SUBSET_OPTIONS and not SelectDtypes.is_numpy_dtype(k):
                 raise DaskPipesException(
                     "subset must be one of {} or dtype; received {}".format(SelectDtypes.SUBSET_OPTIONS, repr(k)))

@@ -3,7 +3,8 @@ from ..exceptions import DaskPipesException
 from typing import Any, Dict, List, Optional
 from types import MethodType
 from collections import namedtuple
-from sklearn.base import BaseEstimator
+from sklearn.base import BaseEstimator, TransformerMixin
+import dask.dataframe as dd
 import inspect
 from ..utils import (ArgumentDescription,
                      get_arguments_description,
@@ -98,7 +99,7 @@ class NodeBaseMeta(type):
         if 'fit' in attrs:
             attrs['fit'] = mcs.wrap_fit(attrs['fit'])
         else:
-            raise DaskPipesException("Class does not have fit method")
+            raise DaskPipesException("Class {} does not have fit method".format(name))
 
         # Check transform parameters
         if 'transform' not in attrs:
@@ -107,7 +108,7 @@ class NodeBaseMeta(type):
         return super().__new__(mcs, name, bases, attrs)
 
 
-class NodeBase(VertexBase, BaseEstimator, metaclass=NodeBaseMeta):
+class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMeta):
 
     def __init__(self, name: str = None):
         super().__init__()
@@ -278,6 +279,10 @@ class NodeBase(VertexBase, BaseEstimator, metaclass=NodeBaseMeta):
         """
         raise NotImplementedError()
 
+    def fit_transform(self, *args, **kwargs):
+        self.fit(*args, **kwargs)
+        return self.transform(*args, **kwargs)
+
     def __repr__(self):
         if self.name is None:
             return '<Unnamed {} at {}>'.format(self.__class__.__name__, hex(id(self)))
@@ -305,7 +310,6 @@ class ExampleNode(NodeBase):
         :param dataset: dataset to transform
         :return:
         """
-        assert dataset is not None
         assert self.params['a'] == 1
         return dataset
 
@@ -331,6 +335,12 @@ class Pipeline(Graph):
         # For naming unnamed nodes
         self.node_name_counter = 0
 
+    @staticmethod
+    def _get_default_node_name(node, counter=None):
+        if counter is None or counter == 0:
+            return '{}'.format(node.__class__.__name__.lower())
+        return '{}{}'.format(node.__class__.__name__.lower(), counter)
+
     def add_vertex(self, node: NodeBase, vertex_id=None):
         """
         Add node to current pipeline
@@ -340,9 +350,9 @@ class Pipeline(Graph):
         :return:
         """
         if node.name is None:
-            while '{}_unnamed{}'.format(node.__class__.__name__, self.node_name_counter) in self.node_dict:
+            while Pipeline._get_default_node_name(node, self.node_name_counter) in self.node_dict:
                 self.node_name_counter += 1
-            node.name = '{}_unnamed{}'.format(node.__class__.__name__, self.node_name_counter)
+            node.name = Pipeline._get_default_node_name(node, self.node_name_counter)
             self.node_name_counter += 1
         if node.name in self.node_dict:
             if self.node_dict[node.name] is not node:
@@ -517,8 +527,8 @@ class Pipeline(Graph):
         Infers and updates signatures of fit and transform methods for user-friendly hints
         :return:
         """
-        fit_func = getattr(self.fit, '__func__')  # Since fit is method, it has __func__
-        transform_func = getattr(self.transform, '__func__')  # Since transform is method, it has __func__
+        fit_func = self.__class__.fit  # Since fit is method, it has __func__
+        transform_func = self.__class__.transform  # Since transform is method, it has __func__
         fit_sign = inspect.signature(fit_func)
         transform_sign = inspect.signature(transform_func)
 
@@ -532,10 +542,16 @@ class Pipeline(Graph):
                              i.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD and
                              i.default != inspect._empty]
         new_params_kwargs_only = [i for i in original_prams if i.kind == inspect.Parameter.KEYWORD_ONLY]
+        reserved = {p.name for p in new_params_pos_only}.union(
+            {p.name for p in new_params_pos}).union(
+            {p.name for p in new_params_kwargs}).union(
+            {p.name for p in new_params_kwargs_only})
         seen_params = set()
 
         if len(self._inputs) > 0:
             for inp in self._inputs:
+                if inp.arg_name in reserved:
+                    raise DaskPipesException("Input name {} is reserved".format(inp.arg_name))
                 if inp.arg_name in seen_params:
                     continue
                 param = inspect.Parameter(
@@ -552,8 +568,8 @@ class Pipeline(Graph):
                     new_params_kwargs_only.append(param)
                 else:
                     raise TypeError("Invalid parameter king")
-
                 seen_params.add(inp.arg_name)
+
             new_params = new_params_pos_only + new_params_pos + new_params_kwargs + new_params_kwargs_only
 
             self._set_fit_signature(inspect.Signature(
@@ -707,7 +723,7 @@ class Pipeline(Graph):
                 "Already contains {}".format(downstream_op, edge.downstream_slot,
                                              node_arguments[downstream_op][edge.downstream_slot]))
         if downstream_op not in node_arguments:
-            raise DaskPipesException("Pipeline does not have {}".format(downstream_op))
+            raise DaskPipesException("Pipeline does not contain {}".format(downstream_op))
         if edge.upstream_slot not in op_result:
             if len(op_result) == 0:
                 raise DaskPipesException("Node {} did not return anything!".format(op))
@@ -731,38 +747,43 @@ class Pipeline(Graph):
         outputs = dict()
 
         for op in VertexWidthFirst(self):
-            op: NodeBase
-            op_args = node_arguments[op]
+            try:
+                op: NodeBase
+                op_args = node_arguments[op]
 
-            if len(op_args) == 0:
-                raise DaskPipesException("No input for node {}".format(op))
+                if len(op_args) == 0:
+                    raise DaskPipesException("No input for node {}".format(op))
 
-            downstream_edges = self.get_downstream_edges(op)
-            has_downstream = len(downstream_edges) > 0
+                downstream_edges = self.get_downstream_edges(op)
+                has_downstream = len(downstream_edges) > 0
 
-            op_result = func(op, has_downstream=has_downstream, **op_args)
+                op_result = func(op, has_downstream=has_downstream, **op_args)
 
-            if op_result is None:
-                continue
+                if op_result is None:
+                    continue
 
-            if not isinstance(op_result, dict):
-                raise DaskPipesException(
-                    "Invalid return. Expected {}, received {}".format(dict.__name__,
-                                                                      op_result.__class__.__name__))
+                if not isinstance(op_result, dict):
+                    raise DaskPipesException(
+                        "Invalid return. Expected {}, received {}".format(dict.__name__,
+                                                                          op_result.__class__.__name__))
 
-            unused_output = set(op_result.keys())
+                unused_output = set(op_result.keys())
 
-            # Get downstream edges
-            for edge in downstream_edges:
-                downstream_op: NodeBase = edge.downstream
-                edge: NodeConnection
-                self._check_arguements(op, edge, node_arguments, downstream_op, op_result)
-                if edge.upstream_slot in unused_output:
-                    unused_output.remove(edge.upstream_slot)
-                node_arguments[downstream_op][edge.downstream_slot] = op_result[edge.upstream_slot]
+                # Get downstream edges
+                for edge in downstream_edges:
+                    downstream_op: NodeBase = edge.downstream
+                    edge: NodeConnection
+                    self._check_arguements(op, edge, node_arguments, downstream_op, op_result)
+                    if edge.upstream_slot in unused_output:
+                        unused_output.remove(edge.upstream_slot)
 
-            for upstream_slot in unused_output:
-                outputs[(op, upstream_slot)] = op_result[upstream_slot]
+                    # Populate arguments of downstream vertex
+                    node_arguments[downstream_op][edge.downstream_slot] = op_result[edge.upstream_slot]
+
+                for upstream_slot in unused_output:
+                    outputs[(op, upstream_slot)] = op_result[upstream_slot]
+            except Exception as ex:
+                raise DaskPipesException("Error occurred during {}".format(op)) from ex
 
         return outputs
 
@@ -795,8 +816,6 @@ class Pipeline(Graph):
         op_args = {k: v.copy() if v is not None else v for k, v in op_args.items()}
 
         op_result = Pipeline._parse_node_output(op, op.transform(**op_args))
-        if len(op_result) == 0:
-            raise DaskPipesException("Node {} did not return anything".format(op))
 
         return op_result
 
@@ -828,6 +847,7 @@ class Pipeline(Graph):
         """
 
         def func(op, has_downstream, **op_args):
+            print("Transforming {}".format(op))
             return self._transform(op, **op_args)
 
         outputs = self._iterate_graph(func, *args, **kwargs)
