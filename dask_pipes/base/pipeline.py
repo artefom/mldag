@@ -527,10 +527,10 @@ class Pipeline(Graph):
         new_params_pos_only = [i for i in original_prams if i.kind == inspect.Parameter.POSITIONAL_ONLY]
         new_params_pos = [i for i in original_prams if
                           i.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD and
-                          i.default is None]
+                          i.default == inspect._empty]
         new_params_kwargs = [i for i in original_prams if
                              i.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD and
-                             i.default is not None]
+                             i.default != inspect._empty]
         new_params_kwargs_only = [i for i in original_prams if i.kind == inspect.Parameter.KEYWORD_ONLY]
         seen_params = set()
 
@@ -544,7 +544,7 @@ class Pipeline(Graph):
                     if len(self._inputs) == 1 else inspect.Parameter.KEYWORD_ONLY,
                     default=None)
 
-                if param.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD and param.default is None:
+                if param.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD and param.default == inspect._empty:
                     new_params_pos.append(param)
                 elif param.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD:
                     new_params_kwargs.append(param)

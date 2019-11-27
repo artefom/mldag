@@ -1,9 +1,16 @@
 from ..base import NodeBase
 from ..exceptions import DaskPipesException
 from ..utils import replace_signature
-
+import pandas as pd
+import dask.dataframe as dd
+import dask.array as da
+import pandas.api.types
+import numpy as np
 from types import MethodType
 import inspect
+from copy import copy
+
+__all__ = ['as_node', 'NodeWrapper', 'SelectDtypes']
 
 
 class NodeWrapper(NodeBase):
@@ -71,5 +78,129 @@ class NodeWrapper(NodeBase):
         return self.estimator.transform(*args, **kwargs)
 
 
-def as_node(name, estimator):
+def as_node(name, estimator) -> NodeWrapper:
     return NodeWrapper(name=name, estimator=estimator)
+
+
+class SelectDtypes(NodeBase):
+    SUBSET_OPTIONS = [
+        'mixed',
+        'str_or_na',
+        'category',
+        'float_na_inf',
+        'float_na_int',
+    ]
+
+    def __init__(self, name=None, include=None, exclude=None):
+        super().__init__(name)
+        self._include = list()
+        self._exclude = list()
+
+        # fittable parameters
+        self.selected_columns_ = None
+
+        self.include = include
+        self.exclude = exclude
+
+    @staticmethod
+    def _validate_subset(arr):
+        if arr is None:
+            return list()
+
+        if isinstance(arr, str):
+            arr = [arr, ]
+
+        try:
+            if SelectDtypes.is_numpy_dtype(arr):
+                arr = [arr, ]
+        except TypeError:
+            pass
+
+        try:
+            it = iter(arr)
+        except TypeError:
+            raise DaskPipesException("Expected list; received {}".format(arr.__class__.__name__))
+
+        for k in arr:
+            if k is not None and k not in SelectDtypes.SUBSET_OPTIONS and not SelectDtypes.is_numpy_dtype(k):
+                raise DaskPipesException(
+                    "subset must be one of {} or dtype; received {}".format(SelectDtypes.SUBSET_OPTIONS, repr(k)))
+        return copy(arr)
+
+    def _check_include_exclude_intersection(self):
+        if len(set(self.include).intersection(self.exclude)) != 0:
+            raise DaskPipesException(
+                "Include and exclude have overlapping elements: {}".format(
+                    set(self.include).intersection(self.exclude)))
+
+    @property
+    def include(self):
+        return copy(self._include)
+
+    @include.setter
+    def include(self, include):
+        self._include = self._validate_subset(include)
+        self._check_include_exclude_intersection()
+
+    @property
+    def exclude(self):
+        return copy(self._exclude)
+
+    @exclude.setter
+    def exclude(self, exclude):
+        self._exclude = self._validate_subset(exclude)
+        self._check_include_exclude_intersection()
+
+    @staticmethod
+    def is_numpy_dtype(dtype):
+        try:
+            return np.issubdtype(dtype, np.generic) and dtype not in SelectDtypes.SUBSET_OPTIONS
+        except TypeError:
+            return False
+
+    @staticmethod
+    def matches_dtype(column: dd.Series, dtype):
+        # Assuming dtype is valid
+        if SelectDtypes.is_numpy_dtype(dtype):
+            return np.issubdtype(column.dtype, dtype)
+        if dtype == 'category':
+            return pd.api.types.is_categorical(dtype)
+        if dtype == 'float_inf':
+            if not np.issubdtype(dtype, np.floating):
+                return False
+            return da.isinf(column).max().compute()
+        if dtype == 'float_int':
+            if not np.issubdtype(dtype, np.floating):
+                return False
+            return (column.fillna(0).astype(int) == column.fillna(0)).min().compute()
+
+        if column.dtype != object:
+            return False
+
+        all_str = column.apply(lambda x: isinstance(x, str) or pd.isna(x), meta=(column.name, bool)).min().compute()
+        if dtype == 'str_or_na':
+            return all_str
+        if dtype == 'mixed':
+            return not all_str
+        raise DaskPipesException("cannot subset by {}; not implemented.".format(dtype))
+
+    def matches_dtypes(self, column, include, exclude):
+        included = False
+        for dtype in include:
+            if self.matches_dtype(column, dtype):
+                included = True
+            break
+        excluded = False
+        for dtype in exclude:
+            if self.matches_dtype(column, dtype):
+                excluded = True
+            break
+        return included and not excluded
+
+    def fit(self, dataset: dd.DataFrame):
+        # Detect mixed types on subset
+        self.selected_columns_ = [col for col in dataset.columns
+                                  if self.matches_dtypes(dataset[col], self.include, self.exclude)]
+
+    def transform(self, dataset: dd.DataFrame):
+        return dataset[self.selected_columns_]
