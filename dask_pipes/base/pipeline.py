@@ -21,6 +21,31 @@ PipelineInput = namedtuple("PipelineInput", ['arg_name', 'downstream_slot', 'dow
 PipelineOutput = namedtuple("PipelineOutput", ['output_name', 'upstream_slot', 'upstream_node'])
 
 
+class NodeSlot:
+    def __init__(self, node, slot: str):
+        if not hasattr(node, 'set_downstream') or not hasattr(node, 'set_upstream'):
+            raise DaskPipesException("node {} must implement set_downstream, set_upstream".format(node))
+
+        self.node = node
+        self.slot = slot
+
+    def __rshift__(self, other):
+        if isinstance(other, NodeSlot):
+            self.node.set_downstream(other.node, upstream_slot=self.slot, downstream_slot=other.slot)
+        elif isinstance(other, NodeBase):
+            self.node.set_downstream(other, upstream_slot=self.slot)
+        elif isinstance(other, Pipeline):
+            raise NotImplementedError()
+
+    def __lshift__(self, other):
+        if isinstance(other, NodeSlot):
+            self.node.set_upstream(other.node, upstream_slot=other.slot, downstream_slot=self.slot)
+        elif isinstance(other, NodeBase):
+            self.node.set_upstream(other, downstream_slot=self.slot)
+        elif isinstance(other, Pipeline):
+            raise NotImplementedError()
+
+
 class NodeConnection(EdgeBase):
 
     def __init__(self, upstream, downstream, upstream_slot: str, downstream_slot: str):
@@ -113,6 +138,31 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
     def __init__(self, name: str = None):
         super().__init__()
         self.name = name
+
+    def __getitem__(self, slot):
+        available_slots = sorted({i.name for i in self.inputs}.union({i.name for i in self.outputs}))
+
+        if slot not in available_slots:
+            raise DaskPipesException(
+                "{} Does not have input or output slot {}. Use one of {}".format(
+                    self, slot, available_slots))
+        return NodeSlot(self, slot)
+
+    def __rshift__(self, other):
+        if isinstance(other, NodeSlot):
+            self.set_downstream(other.node, downstream_slot=other.slot)
+        elif isinstance(other, NodeBase):
+            self.set_downstream(other)
+        elif isinstance(other, Pipeline):
+            raise NotImplementedError()
+
+    def __lshift__(self, other):
+        if isinstance(other, NodeSlot):
+            self.set_upstream(other.node, upstream_slot=other.slot)
+        elif isinstance(other, NodeBase):
+            self.set_upstream(other)
+        elif isinstance(other, Pipeline):
+            raise NotImplementedError()
 
     @property
     def outputs(self) -> List[ReturnDescription]:
@@ -341,6 +391,20 @@ class Pipeline(Graph):
             return '{}'.format(node.__class__.__name__.lower())
         return '{}{}'.format(node.__class__.__name__.lower(), counter)
 
+    def __rshift__(self, other):
+        if isinstance(other, NodeSlot):
+            self.set_input(other.node, arg_name=other.slot, downstream_slot=other.slot)
+        elif issubclass(other.__class__, NodeBase):
+            self.set_input_node(other)
+        else:
+            raise NotImplementedError()
+
+    def __lshift__(self, other):
+        raise NotImplementedError()
+
+    def __getitem__(self, slot):
+        return NodeSlot(self, slot)
+
     def add_vertex(self, node: NodeBase, vertex_id=None):
         """
         Add node to current pipeline
@@ -444,7 +508,86 @@ class Pipeline(Graph):
         """
         NodeBase.validate(vertex)
 
-    def set_input(self, node: NodeBase, suffix=None):
+    def set_upstream(self, other,
+                     upstream_slot: Optional[str] = None,
+                     downstream_slot: Optional[str] = None):
+        """
+        Set pipeline output
+        :param other:
+        :param upstream_slot:
+        :param downstream_slot:
+        :return:
+        """
+        raise NotImplementedError()
+
+    def set_downstream(self, other,
+                       upstream_slot: Optional[str] = None,
+                       downstream_slot: Optional[str] = None, ):
+        """
+        Set pipeline input
+        :param other:
+        :param upstream_slot:
+        :param downstream_slot:
+        :return:
+        """
+        self.set_input(other, arg_name=upstream_slot, downstream_slot=downstream_slot)
+
+    def remove_input(self, arg_name):
+        len_before = len(self._inputs)
+        if len_before == 0:
+            raise DaskPipesException("{} Does not have any arguments".format(self))
+        self._inputs = [i for i in self._inputs if i.arg_name == arg_name]
+        if len(self._inputs) == len_before:
+            raise DaskPipesException("{} Does not have argument {}".format(self, arg_name))
+        self._update_fit_transform_signatures()
+
+    def remove_input_node(self, node: NodeBase):
+        """
+        Unset node as pipeline output
+        :param node: node to unset as output
+        :return:
+        """
+        self.validate_vertex(node)
+        # Find inputs to remove
+        self._inputs = [i for i in self._inputs if i.downstream_node is not node]
+        self._update_fit_transform_signatures()
+
+    def set_input(self, node: NodeBase, arg_name=None, downstream_slot=None):
+        self.validate_vertex(node)
+        node_inp = [i.name for i in node.inputs]
+        if len(node_inp) == 0:
+            raise DaskPipesException("{} does not have any inputs")
+
+        if downstream_slot is None:
+            if len(node_inp) == 1:
+                downstream_slot = node_inp[0]
+            else:
+                raise DaskPipesException("{} has multiple inputs, specify downstream_slot".format(node))
+
+        if downstream_slot not in node_inp:
+            raise DaskPipesException(
+                "{} does not have input {}; available: {}".format(node, downstream_slot, node_inp))
+
+        if arg_name is None:
+            arg_name = downstream_slot
+
+        current_args = [i for i in self._inputs if i.arg_name == arg_name]
+        if len(current_args) > 0:
+            assert len(current_args) == 1
+            existing_arg = current_args[0]
+            if existing_arg.downstream_slot != downstream_slot or existing_arg.downstream_node is not node:
+                raise DaskPipesException("{} already has argument ''".format(self, arg_name))
+            else:
+                return
+
+        self._inputs.append(PipelineInput(arg_name=arg_name,
+                                          downstream_slot=downstream_slot,
+                                          downstream_node=node))
+        # Assign node to current pipeline
+        node.graph = self
+        self._update_fit_transform_signatures()
+
+    def set_input_node(self, node: NodeBase, suffix=None):
         """
         Register node as pipeline's input.
         All node inputs should be passed in fit function
@@ -461,9 +604,9 @@ class Pipeline(Graph):
         >>> op1 = ExampleNode('op1')
         >>>
         >>> # Assign input for op1 as pipeline input and add it to pipeline
-        >>> p.set_input(op1)
+        >>> p.set_inputs_all(op1, suffix='_op1')
         >>> # p.fit signature changed
-        >>> # also, p.inputs now returns ['dataset']
+        >>> # also, p.inputs now returns ['dataset_op1']
 
         :param node: node to set as input
         :param suffix: suffix to add to node's inputs before setting them as pipeline inputs
@@ -495,18 +638,6 @@ class Pipeline(Graph):
                                               downstream_node=node))
         node.graph = self
 
-        self._update_fit_transform_signatures()
-
-    def remove_input(self, node: NodeBase):
-        """
-        Unset node as pipeline output
-        :param node: node to unset as output
-        :return:
-        """
-        self.validate_vertex(node)
-
-        # Find inputs to remove
-        self._inputs = [i for i in self._inputs if i.downstream_node is not node]
         self._update_fit_transform_signatures()
 
     def _set_fit_signature(self, sign: inspect.Signature):
@@ -847,7 +978,6 @@ class Pipeline(Graph):
         """
 
         def func(op, has_downstream, **op_args):
-            print("Transforming {}".format(op))
             return self._transform(op, **op_args)
 
         outputs = self._iterate_graph(func, *args, **kwargs)
