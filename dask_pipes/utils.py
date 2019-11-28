@@ -17,8 +17,8 @@ __all__ = ['read_file', 'dump_yaml', 'load_yaml', 'cleanup_empty_dirs', 'try_cre
 
 VALIDATE_SUBCLASSES = False
 
-ArgumentDescription = namedtuple("ArgumentDescription", ['name', 'type', 'description'])
-ReturnDescription = namedtuple("ArgumentDescription", ['name', 'type', 'description'])
+ArgumentDescription = namedtuple("ArgumentDescription", ['name', 'type', 'description', 'default'])
+ReturnDescription = namedtuple("ReturnDescription", ['name', 'type', 'description'])
 
 RETURN_UNNAMED = 'result'
 
@@ -48,10 +48,12 @@ def is_categorical(type: Type) -> bool:
 
 
 def get_arguments_description(func: Callable, skip_first=1) -> List[ArgumentDescription]:
-    fullargspec = inspect.getfullargspec(func)
-    argspec = fullargspec.args[skip_first:]
     annotations = func.__annotations__
-    rv = [ArgumentDescription(name=k, type=annotations.get(k, object), description=None) for k in argspec]
+    params = list(inspect.signature(func).parameters.values())
+    rv = [ArgumentDescription(name=param.name,
+                              type=annotations.get(param.name, object),
+                              description=None,
+                              default=param.default) for param in params]
     return rv
 
 
@@ -75,7 +77,7 @@ def get_return_description(func: Callable) -> List[ReturnDescription]:
                 raise NotImplementedError()
             if var_name in set((i[0] for i in rv)):
                 raise DaskPipesException("duplicate return name: {} of {}".format(var_name, func_name))
-            rv.append(ArgumentDescription(name=var_name, type=var_type, description=None))
+            rv.append(ReturnDescription(name=var_name, type=var_type, description=None))
         return rv
     elif isinstance(return_type, dict):
         return [ReturnDescription(name=k, type=v, description=None) for k, v in return_type.items()]

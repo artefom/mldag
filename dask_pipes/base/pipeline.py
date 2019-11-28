@@ -13,9 +13,7 @@ from ..utils import (ArgumentDescription,
                      assert_subclass,
                      replace_signature)
 
-__all__ = ['NodeConnection', 'NodeBase', 'Pipeline', 'NodeBaseMeta', 'ExampleNode']
-
-NodeInput = namedtuple("NodeInput", ['input_arg', 'upstream_output_name', 'upstream_node'])
+__all__ = ['NodeConnection', 'NodeBase', 'Pipeline', 'NodeBaseMeta', 'DummyNode']
 
 PipelineInput = namedtuple("PipelineInput", ['arg_name', 'downstream_slot', 'downstream_node'])
 PipelineOutput = namedtuple("PipelineOutput", ['output_name', 'upstream_slot', 'upstream_node'])
@@ -237,8 +235,8 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         Example:
         >>> # Construct pipeline and nodes
         >>> p = Pipeline()
-        >>> op1 = ExampleNode('op1')
-        >>> op2 = ExampleNode('op2')
+        >>> op1 = DummyNode('op1')
+        >>> op2 = DummyNode('op2')
         >>>
         >>> # Assign input for op1 as pipeline input and add it to pipeline
         >>> p.set_input(op1)
@@ -268,8 +266,8 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         Example:
         >>> # Construct pipeline and nodes
         >>> p = Pipeline()
-        >>> op1 = ExampleNode('op1')
-        >>> op2 = ExampleNode('op2')
+        >>> op1 = DummyNode('op1')
+        >>> op2 = DummyNode('op2')
         >>>
         >>> # Assign input for op1 as pipeline input and add it to pipeline
         >>> p.set_input(op1)
@@ -305,8 +303,8 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         >>> import pandas as pd
         >>> ds = pd.DataFrame([[1,2,3]])
         >>> p = Pipeline()
-        >>> op1 = ExampleNode('op1')
-        >>> op2 = ExampleNode('op2')
+        >>> op1 = DummyNode('op1')
+        >>> op2 = DummyNode('op2')
         >>> p.set_input(op1)
         >>> op1.set_downstream(op2)
         >>> print(p.inputs) # ['dataset']
@@ -332,8 +330,8 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         >>> import pandas as pd
         >>> ds = pd.DataFrame([[1,2,3]])
         >>> p = Pipeline()
-        >>> op1 = ExampleNode('op1')
-        >>> op2 = ExampleNode('op2')
+        >>> op1 = DummyNode('op1')
+        >>> op2 = DummyNode('op2')
         >>> p.set_input(op1)
         >>> op1.set_downstream(op2)
         >>> op1.fit(ds)
@@ -368,28 +366,16 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         return '<{}: {}>'.format(self.__class__.__name__, self.name)
 
 
-class ExampleNode(NodeBase):
+class DummyNode(NodeBase):
 
     def __init__(self, name=None):
         super().__init__(name=name)
-        self.params = None
 
-    def fit(self, dataset):
-        """
-        Example docstring
-        :param dataset: dataset to fit to
-        :return: Parameters passed to .transform
-        """
-        self.params = {'a': 1}
+    def fit(self, X, y=None):
+        return self
 
-    def transform(self, dataset):
-        """
-        Example docstring
-        :param dataset: dataset to transform
-        :return:
-        """
-        assert self.params['a'] == 1
-        return dataset
+    def transform(self, X, y=None):
+        return X
 
 
 class Pipeline(Graph):
@@ -600,14 +586,16 @@ class Pipeline(Graph):
     def set_input(self, node: NodeBase, arg_name=None, downstream_slot=None):
         self.validate_vertex(node)
         node_inp = [i.name for i in node.inputs]
+        node_inp_no_default = [i.name for i in node.inputs if i.default == inspect._empty]
         if len(node_inp) == 0:
             raise DaskPipesException("{} does not have any inputs")
 
         if downstream_slot is None:
-            if len(node_inp) == 1:
-                downstream_slot = node_inp[0]
+            if len(node_inp_no_default) == 1:
+                downstream_slot = node_inp_no_default[0]
             else:
-                raise DaskPipesException("{} has multiple inputs, specify downstream_slot".format(node))
+                raise DaskPipesException("{} has multiple inputs without default value, "
+                                         "specify downstream_slot".format(node))
 
         if downstream_slot not in node_inp:
             raise DaskPipesException(
@@ -621,7 +609,7 @@ class Pipeline(Graph):
             assert len(current_args) == 1
             existing_arg = current_args[0]
             if existing_arg.downstream_slot != downstream_slot or existing_arg.downstream_node is not node:
-                raise DaskPipesException("{} already has argument ''".format(self, arg_name))
+                raise DaskPipesException("{} already has argument '{}'".format(self, arg_name))
             else:
                 return
 
@@ -646,7 +634,7 @@ class Pipeline(Graph):
         Example:
         >>> # Construct pipeline and nodes
         >>> p = Pipeline()
-        >>> op1 = ExampleNode('op1')
+        >>> op1 = DummyNode('op1')
         >>>
         >>> # Assign input for op1 as pipeline input and add it to pipeline
         >>> p.set_inputs_all(op1, suffix='_op1')
@@ -669,12 +657,12 @@ class Pipeline(Graph):
             downstream_slot = op_input.name
 
             if downstream_slot is None:
-                node_inputs = node.inputs
-                if len(node_inputs) > 1:
+                node_inputs_no_default = [i for i in node.inputs if i.default == inspect._empty]
+                if len(node_inputs_no_default) > 1:
                     raise DaskPipesException(
                         "{} has multiple inputs, "
-                        "downstream_slot must be one of {}".format(node, [i.name for i in node_inputs]))
-                downstream_slot = node_inputs[0].name
+                        "downstream_slot must be one of {}".format(node, [i.name for i in node.inputs]))
+                downstream_slot = node_inputs_no_default[0].name
 
             arg_name = '{}{}'.format(downstream_slot, suffix)
 
@@ -791,13 +779,14 @@ class Pipeline(Graph):
 
         if downstream_slot is None:
             downstream_inputs = downstream.inputs
-            if len(downstream_inputs) > 1:
+            slots_no_default = [i for i in downstream_inputs if i.default == inspect._empty]
+            if len(slots_no_default) > 1:
                 raise DaskPipesException(
                     "{} has multiple inputs, cannot infer downstream_slot. "
                     "Please, provide downstream_slot as one of {}".format(
                         downstream,
                         [i.name for i in downstream_inputs]))
-            downstream_slot = downstream_inputs[0].name
+            downstream_slot = slots_no_default[0].name
 
         # Create edge
         edge = NodeConnection(upstream=upstream,
