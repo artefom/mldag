@@ -30,18 +30,32 @@ class NodeSlot:
         self.slot = slot
 
     def __rshift__(self, other):
+        """
+        self >> other
+        :param other:
+        :return:
+        """
         if isinstance(other, NodeSlot):
             self.node.set_downstream(other.node, upstream_slot=self.slot, downstream_slot=other.slot)
+            return other.node
         elif isinstance(other, NodeBase):
             self.node.set_downstream(other, upstream_slot=self.slot)
+            return other
         elif isinstance(other, Pipeline):
             raise NotImplementedError()
 
     def __lshift__(self, other):
+        """
+        self << other
+        :param other:
+        :return:
+        """
         if isinstance(other, NodeSlot):
             self.node.set_upstream(other.node, upstream_slot=other.slot, downstream_slot=self.slot)
+            return other.node
         elif isinstance(other, NodeBase):
             self.node.set_upstream(other, downstream_slot=self.slot)
+            return other
         elif isinstance(other, Pipeline):
             raise NotImplementedError()
 
@@ -149,18 +163,32 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         return NodeSlot(self, slot)
 
     def __rshift__(self, other):
+        """
+        self >> other
+        :param other:
+        :return:
+        """
         if isinstance(other, NodeSlot):
             self.set_downstream(other.node, downstream_slot=other.slot)
+            return other.node
         elif isinstance(other, NodeBase):
             self.set_downstream(other)
+            return other
         elif isinstance(other, Pipeline):
             raise NotImplementedError()
 
     def __lshift__(self, other):
+        """
+        self << other
+        :param other:
+        :return:
+        """
         if isinstance(other, NodeSlot):
             self.set_upstream(other.node, upstream_slot=other.slot)
+            return other.node
         elif isinstance(other, NodeBase):
             self.set_upstream(other)
+            return other
         elif isinstance(other, Pipeline):
             raise NotImplementedError()
 
@@ -392,17 +420,34 @@ class Pipeline(Graph):
         return '{}{}'.format(node.__class__.__name__.lower(), counter)
 
     def __rshift__(self, other):
+        """
+        self >> other
+        :param other:
+        :return:
+        """
         if isinstance(other, NodeSlot):
             self.set_input(other.node, arg_name=other.slot, downstream_slot=other.slot)
+            return other.node
         elif issubclass(other.__class__, NodeBase):
             self.set_input_node(other)
+            return other
         else:
             raise NotImplementedError()
 
     def __lshift__(self, other):
+        """
+        self << other
+        :param other:
+        :return:
+        """
         raise NotImplementedError()
 
     def __getitem__(self, slot):
+        """
+        Pipeline['slot']
+        :param slot:
+        :return:
+        """
         return NodeSlot(self, slot)
 
     def add_vertex(self, node: NodeBase, vertex_id=None):

@@ -12,7 +12,8 @@ import inspect
 from copy import copy
 import dask_ml.preprocessing
 
-__all__ = ['as_node', 'NodeWrapper', 'SelectDtypes', 'MergeColumns', 'RemoveInfrequent', 'NNPrepare']
+__all__ = ['as_node', 'NodeWrapper', 'SelectDtypes', 'MergeColumns',
+           'RobustCategoriser', 'FillnaMulti', 'OneHotOrOrdinal']
 
 
 class NodeWrapper(NodeBase):
@@ -230,7 +231,7 @@ class MergeColumns(NodeBase):
         return pd.merge(args)
 
 
-class RemoveInfrequent(NodeBase):
+class RobustCategoriser(NodeBase):
     """
     Remove infrequent values
     By default transforms only columns of dtype object
@@ -242,7 +243,7 @@ class RemoveInfrequent(NodeBase):
                  include_columns=None,
                  exclude_columns=None,
                  max_categories=100,
-                 min_coverage=0.6,
+                 min_coverage=0.5,
                  replacement='<Other>',
                  drop=True):
         super().__init__(name)
@@ -258,30 +259,33 @@ class RemoveInfrequent(NodeBase):
         self.columns_ = None
         self.drop_columns_ = None
         self.frequent_vals_ = None
+        self.coverage_ = None
 
     def get_col_stats(self, col: dd.Series):
         val_counts = col.value_counts().compute()
-        top_vals = val_counts.index[:self.max_categories]
-        min_count = val_counts[top_vals].min()
+        total_count = val_counts.sum()
+        categories = list()
+        coverage = 0
 
-        # Select top values by count.
-        # Drop last values that have identical counts
-        if (val_counts >= min_count).sum() <= self.max_categories:
-            top_vals = val_counts[val_counts >= min_count].index
-        elif (val_counts > min_count).sum() > 0:
-            top_vals = val_counts[val_counts > min_count].index
-        else:
-            return {}, 0
+        for count in val_counts:
+            new_categories = list(val_counts[(val_counts >= count)].index)
+            new_coverage = val_counts[new_categories].sum() / total_count
+            if new_coverage < 1:
+                new_categories = [self.replacement, ] + new_categories
+            if len(new_categories) > self.max_categories:
+                break
+            if new_coverage > self.min_coverage:
+                coverage = new_coverage
+                categories = new_categories
+                break
 
-        val_counts_top = val_counts[top_vals]
-        categories = set(top_vals)
-        coverage = val_counts_top.sum() / val_counts.sum()
         return categories, coverage
 
     def fit(self, dataset):
         self.columns_ = self.columns
         self.frequent_vals_ = dict()
         self.drop_columns_ = list()
+        self.coverage_ = dict()
 
         if self.columns_ is None:
             self.columns_ = dataset.select_dtypes(object).columns
@@ -294,14 +298,17 @@ class RemoveInfrequent(NodeBase):
 
         for col_name in self.columns_:
             categories, coverage = self.get_col_stats(dataset[col_name])
-            if self.min_coverage <= coverage:
+            if coverage > self.min_coverage:
                 self.frequent_vals_[col_name] = categories
+                self.coverage_[col_name] = coverage
             else:
                 self.drop_columns_.append(col_name)
         return self
 
     def transform(self, dataset):
-        def get_col_transformer(frequent_val_set, repl_val):
+        def get_col_transformer(categories, repl_val):
+            frequent_val_set = set(categories)
+
             def check_frequent(x):
                 return x if x in frequent_val_set or pd.isna(x) else repl_val
 
@@ -309,12 +316,13 @@ class RemoveInfrequent(NodeBase):
 
         for col_name in dataset.columns:
             if col_name in self.frequent_vals_:
-                col_frequent_vals = self.frequent_vals_[col_name]
-
-                dataset[col_name] = dataset[col_name].apply(
-                    get_col_transformer(col_frequent_vals, self.replacement),
-                    meta=(col_name, object))
-
+                col_categories = self.frequent_vals_[col_name]
+                if self.coverage_[col_name] < 1:
+                    dataset[col_name] = dataset[col_name].apply(
+                        get_col_transformer(col_categories, self.replacement),
+                        meta=(col_name, object))
+                cat_type = pd.api.types.CategoricalDtype(col_categories)
+                dataset[col_name] = dataset[col_name].astype(cat_type)
             elif col_name in self.drop_columns_:
                 if self.drop:
                     dataset.drop(col_name, axis=1)
@@ -344,22 +352,31 @@ class FillnaMulti(NodeBase):
         self.fillna_vals_ = None
 
     def get_fillna_val(self, column: dd.Series):
-        if np.issubdtype(column.dtype, np.number):
+        def issubdtype(x, y):
+            try:
+                return np.issubdtype(x, y)
+            except TypeError:
+                return False
+
+        if issubdtype(column.dtype, np.number):
             if self.num_fillna_strategy == 'median':
                 return column.quantile(0.5).compute()
             elif self.num_fillna_strategy == 'mean':
                 return column.mean().compute()
-        elif np.issubdtype(column.dtype, np.datetime64) or np.issubdtype(column.dtype, np.timedelta64):
+        elif issubdtype(column.dtype, np.datetime64) or issubdtype(column.dtype, np.timedelta64):
             if self.num_fillna_strategy == 'median':
                 return column.dropna().astype(int).quantile(0.5).compute().astype(column.dtype)
             elif self.num_fillna_strategy == 'mean':
                 return column.dropna().astype(int).mean().compute().astype(column.dtype)
+        elif pd.api.types.is_categorical(column):
+            if self.str_fillna_strategy == 'const':
+                return self.str_fillna_const
         elif column.dtype == object:
             if self.str_fillna_strategy == 'const':
                 return self.str_fillna_const
             else:
                 raise NotImplementedError()
-        elif np.issubdtype(column.dtype, np.bool_):
+        elif issubdtype(column.dtype, np.bool_):
             return None
 
         return None
@@ -371,134 +388,76 @@ class FillnaMulti(NodeBase):
             fillna_val = self.get_fillna_val(col)
             if not pd.isna(fillna_val):
                 self.fillna_vals_[col_name] = fillna_val
+        return self
 
     def transform(self, dataset: dd.DataFrame):
         for col_name in dataset.columns:
             if col_name in self.fillna_vals_:
+                if pd.api.types.is_categorical(dataset[col_name]):
+                    # Impute fillna value to beginning of
+                    old_categories = list(dataset[col_name].dtype.categories)
+                    new_categories = [self.fillna_vals_[col_name]] + old_categories
+                    new_dtype = pd.api.types.CategoricalDtype(new_categories)
+                    dataset[col_name] = dataset[col_name].astype(new_dtype)
+
                 dataset[col_name] = dataset[col_name].fillna(self.fillna_vals_[col_name])
         return dataset
 
 
-class NNPrepare(NodeBase):
-    """
-    Prepare arbitrary dataset for feeding into neural network
-    """
-
+class OneHotOrOrdinal(NodeBase):
     def __init__(self,
                  name=None,
-                 str_fillna_strategy='const',
-                 str_fillna_const='<Unknown>',
-                 str_add_indicator=False,
-                 num_fillna_strategy='median',
-                 num_add_indicator=True,
-                 ordinal_cols=None,
-                 one_hot_cols=None,
-                 ordinal_max_categories=100,
-                 ordinal_min_coverage=0.6,
-                 one_hot_max_categories=10,
-                 one_hot_min_coverage=0.6,
-                 one_hot_drop_first=True,
+                 columns=None,
+                 exclude_columns=None,
                  one_hot_include_columns=None,
                  one_hot_exclude_columns=None,
-                 ordinal_exclude_columns=None,
-                 ordinal_include_columns=None,
-                 drop=True):
+                 one_hot_max_size=10):
         super().__init__(name=name)
-        self.str_fillna_strategy = str_fillna_strategy
-        self.str_fillna_const = str_fillna_const
-        self.str_add_indicator = str_add_indicator
-        self.num_fillna_strategy = num_fillna_strategy
-        self.num_add_indicator = num_add_indicator
-        self.ordinal_cols = ordinal_cols
-        self.one_hot_cols = one_hot_cols
-        self.ordinal_max_categories = ordinal_max_categories
-        self.ordinal_min_coverage = ordinal_min_coverage
-        self.one_hot_max_categories = one_hot_max_categories
-        self.one_hot_min_coverage = one_hot_min_coverage
-        self.one_hot_drop_first = one_hot_drop_first
+        self.columns = columns
+        self.exclude_columns = exclude_columns
         self.one_hot_include_columns = one_hot_include_columns
         self.one_hot_exclude_columns = one_hot_exclude_columns
-        self.ordinal_exclude_columns = ordinal_exclude_columns
-        self.ordinal_include_columns = ordinal_include_columns
-        self.drop = drop
+        self.one_hot_max_size = one_hot_max_size
 
         # Fittable parameters
-        self.one_hot_infrequent_remover_: Optional[RemoveInfrequent] = None
-        self.ordinal_infrequent_remover_: Optional[RemoveInfrequent] = None
-        self.fillna_multi_: Optional[FillnaMulti] = None
+        self.one_hot_columns_ = None
+        self.ordinal_columns_ = None
         self.dummy_encoder_ = None
         self.ordinal_encoder_ = None
-        self.fillna_cols_ = None
-        self.one_hot_cols_ = None
-        self.ordinal_cols_ = None
 
-    def fit(self, dataset: dd.DataFrame):
-        # Fit remove infrequent
+    def fit(self, dataset):
+        categorical_cols = self.columns
+        exclude_columns = set(self.exclude_columns or set())
+        if categorical_cols is None:
+            categorical_cols = [col_name for col_name in dataset.columns
+                                if pd.api.types.is_categorical(dataset[col_name])]
+        categorical_cols = [i for i in categorical_cols if i not in exclude_columns]
+        one_hot_include_columns = set(self.one_hot_include_columns or set())
+        one_hot_exclude_columns = set(self.one_hot_exclude_columns or set())
 
-        self.one_hot_infrequent_remover_ = RemoveInfrequent(
-            name='one_hot',
-            max_categories=self.one_hot_max_categories,
-            min_coverage=self.one_hot_min_coverage,
-            exclude_columns=self.one_hot_exclude_columns,
-            include_columns=self.one_hot_include_columns,
-            drop=False
-        )
-        self.one_hot_infrequent_remover_.fit(dataset)
+        self.one_hot_columns_ = list()
+        self.ordinal_columns_ = list()
+        for col_name in categorical_cols:
+            if not pd.api.types.is_categorical(dataset[col_name]):
+                raise DaskPipesException("Column {} is not categorical".format(col_name))
+            n_cats = len(dataset[col_name].dtype.categories)
+            if (n_cats <= self.one_hot_max_size or col_name in one_hot_include_columns) \
+                    and col_name not in one_hot_exclude_columns:
+                self.one_hot_columns_.append(col_name)
+            else:
+                self.ordinal_columns_.append(col_name)
 
-        self.one_hot_cols_ = [i for i in dataset.columns
-                              if i in self.one_hot_infrequent_remover_.frequent_vals_]
-
-        test_ordinal_cols = [i for i in dataset.select_dtypes(object).columns if i not in self.one_hot_cols_]
-        self.ordinal_infrequent_remover_ = RemoveInfrequent(
-            name='ordinal',
-            max_categories=self.ordinal_max_categories,
-            min_coverage=self.ordinal_min_coverage,
-            exclude_columns=self.ordinal_exclude_columns,
-            include_columns=self.ordinal_include_columns,
-            drop=False,
-            columns=test_ordinal_cols)
-        self.ordinal_infrequent_remover_.fit(dataset)
-        self.ordinal_cols_ = [i for i in dataset.columns
-                              if i in self.ordinal_infrequent_remover_.frequent_vals_]
-
-        # Fillna
-        self.fillna_multi_ = FillnaMulti(
-            name='fillna',
-            num_fillna_strategy=self.num_fillna_strategy,
-            num_fillna_add_indicator=self.num_add_indicator,
-            str_fillna_strategy=self.str_fillna_strategy,
-            str_fillna_const=self.str_fillna_const,
-            str_fillna_add_indicator=self.str_add_indicator,
-        )
-        self.fillna_multi_.fit(dataset)
-
-        # Fit one-hot encoder
-        one_hot_prep = self.one_hot_infrequent_remover_.transform(dataset)
-        one_hot_prep = self.ordinal_infrequent_remover_.transform(one_hot_prep)
-        one_hot_prep = self.fillna_multi_.transform(one_hot_prep)
-        self.dummy_encoder_ = dask_ml.preprocessing.DummyEncoder(drop_first=self.one_hot_drop_first)
-        self.dummy_encoder_.fit(one_hot_prep[self.one_hot_cols_].categorize())
-
-        # Fit ordinal
-        self.ordinal_encoder_ = dask_ml.preprocessing.OrdinalEncoder()
-        self.ordinal_encoder_.fit(one_hot_prep[self.ordinal_cols_].categorize())
-
-        # Find binary columns
-
-        # Fit standard-scaler
+        self.dummy_encoder_ = dask_ml.preprocessing.DummyEncoder(
+            self.one_hot_columns_,
+            drop_first=True)
+        self.ordinal_encoder_ = dask_ml.preprocessing.OrdinalEncoder(self.ordinal_columns_)
+        self.ordinal_encoder_.fit(dataset)
+        self.dummy_encoder_.fit(dataset)
+        return self
 
     def transform(self, dataset):
-        rv = self.one_hot_infrequent_remover_.transform(dataset)
-        rv = self.ordinal_infrequent_remover_.transform(rv)
-        rv = self.fillna_multi_.transform(rv)
-        if len(self.ordinal_cols_) > 0:
-            ordinal_cols = self.ordinal_encoder_.transform(rv[self.ordinal_cols_].categorize())
-            for colname in ordinal_cols.columns:
-                rv[colname] = ordinal_cols[colname]
-        if len(self.one_hot_cols_) > 0:
-            dummy_cols = self.dummy_encoder_.transform(rv[self.one_hot_cols_].categorize())
-            for colname in dummy_cols.columns:
-                rv[colname] = dummy_cols[colname]
-            for colname in self.one_hot_cols_:
-                rv = rv.drop(colname, axis=1)
-        return rv
+        dataset = self.ordinal_encoder_.transform(dataset)
+        dataset = self.dummy_encoder_.transform(dataset)
+        for col_name in self.ordinal_columns_:
+            dataset[col_name] = dataset[col_name].astype('category').cat.as_known()
+        return dataset
