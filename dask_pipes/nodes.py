@@ -13,7 +13,7 @@ from copy import copy
 import dask_ml.preprocessing
 
 __all__ = ['as_node', 'NodeWrapper', 'SelectDtypes', 'MergeColumns',
-           'RobustCategoriser', 'FillnaMulti', 'OneHotOrOrdinal']
+           'RobustCategoriser', 'FillnaMulti', 'OneHotOrOrdinal', 'DateProcessor']
 
 
 class NodeWrapper(NodeBase):
@@ -169,13 +169,13 @@ class SelectDtypes(NodeBase):
         if SelectDtypes.is_numpy_dtype(dtype):
             return np.issubdtype(column.dtype, dtype)
         if dtype == 'category':
-            return pd.api.types.is_categorical(dtype)
+            return pd.api.types.is_categorical(column.dtype)
         if dtype == 'float_inf':
-            if not np.issubdtype(dtype, np.floating):
+            if not np.issubdtype(column.dtype, np.floating):
                 return False
             return da.isinf(column).max().compute()
         if dtype == 'float_int':
-            if not np.issubdtype(dtype, np.floating):
+            if not np.issubdtype(column.dtype, np.floating):
                 return False
             return (column.fillna(0).astype(int) == column.fillna(0)).min().compute()
 
@@ -460,4 +460,71 @@ class OneHotOrOrdinal(NodeBase):
         dataset = self.dummy_encoder_.transform(dataset)
         for col_name in self.ordinal_columns_:
             dataset[col_name] = dataset[col_name].astype('category').cat.as_known()
+        return dataset
+
+
+class DateProcessor(NodeBase):
+
+    def __init__(self,
+                 name=None,
+                 retro_date_mapping=None):
+        super().__init__(name=name)
+
+        self.retro_date_mapping = retro_date_mapping
+        self.timedeltas_ = None
+        self.datetimes_ = None
+        self.retro_dates_ = None
+        self.datetime_retro_date_mapping_ = None
+
+    @staticmethod
+    def is_timedelta(dtype):
+        try:
+            return np.issubdtype(dtype, np.timedelta64)
+        except TypeError:
+            return False
+
+    @staticmethod
+    def is_datetime(dtype):
+        try:
+            return np.issubdtype(dtype, np.datetime64)
+        except TypeError:
+            return False
+
+    def fit(self, dataset):
+        retro_date_mapping = self.retro_date_mapping or dict()
+        self.timedeltas_ = list()
+        self.datetimes_ = list()
+        self.retro_dates_ = list(set(retro_date_mapping.values()))
+        self.datetime_retro_date_mapping_ = dict()
+
+        if len(set(retro_date_mapping.keys()).intersection(self.retro_dates_)) > 0:
+            raise DaskPipesException(
+                "Columns {} cannot be date and retro_date at same time".format(
+                    set(retro_date_mapping.keys()).intersection(self.retro_dates_)))
+
+        for col_name in dataset.columns:
+            if DateProcessor.is_timedelta(dataset[col_name]):
+                self.timedeltas_.append(col_name)
+            elif DateProcessor.is_datetime(dataset[col_name]):
+                if col_name in self.retro_dates_:
+                    continue
+                if col_name not in retro_date_mapping:
+                    raise DaskPipesException("Column {} has no assigned retro-date".format(col_name))
+                self.datetimes_.append(col_name)
+                self.datetime_retro_date_mapping_[col_name] = retro_date_mapping[col_name]
+
+        return self
+
+    def transform(self, dataset):
+        for col_name in self.timedeltas_:
+            dataset[col_name] = dataset[col_name].apply(
+                lambda x: x.total_seconds() if not pd.isna(x) else None,
+                meta=(col_name, float))
+        for col_name in self.datetimes_:
+            retro_date = self.datetime_retro_date_mapping_[col_name]
+            dataset[col_name] = (dataset[col_name] - dataset[retro_date]).apply(
+                lambda x: x.total_seconds() if not pd.isna(x) else None,
+                meta=(col_name, float))
+        for col in self.retro_dates_:
+            dataset = dataset.drop(col, axis=1)
         return dataset
