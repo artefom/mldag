@@ -1,54 +1,22 @@
 import numpy as np
-from typing import TYPE_CHECKING, List
 import pandas as pd
 
-if TYPE_CHECKING:
-    import dask.dataframe as dd
+import dask.dataframe as dd
+from typing import List
 
-__all__ = ['numeric', 'categorical', 'numeric_binary', 'nullable', 'numeric_nullable']
-
-
-def numeric_nullable(dataset):
-    """
-    Get columns containing Na values
-    :param dataset:
-    :type dataset: dd.DataFrame
-    :return:
-    """
-    numeric_cols = numeric(dataset)
-    non_nullable_candidates = numeric_cols
-    part = dataset.get_partition(0)
-    non_nullable_candidates = {col_name for col_name in non_nullable_candidates
-                               if (part[col_name].isna().sum() == 0).compute()}
-    non_nullable_candidates = {col_name for col_name in non_nullable_candidates
-                               if (dataset[col_name].isna().sum() == 0).compute()}
-    rv = [col_name for col_name in dataset.columns if
-          col_name not in non_nullable_candidates and col_name in numeric_cols]
-    return rv
+__all__ = ['Numeric', 'Nullable', 'Categorical', 'Binary']
 
 
-def nullable(dataset):
-    """
-    Get columns containing Na values
-    :param dataset:
-    :type dataset: dd.DataFrame
-    :return:
-    """
-    non_nullable_candidates = set(dataset.columns)
-    part = dataset.get_partition(0)
-    non_nullable_candidates = {col_name for col_name in non_nullable_candidates
-                               if (part[col_name].isna().sum() == 0).compute()}
-    non_nullable_candidates = {col_name for col_name in non_nullable_candidates
-                               if (dataset[col_name].isna().sum() == 0).compute()}
-    return [col_name for col_name in dataset.columns if col_name not in non_nullable_candidates]
+def nullable(dataset: dd.DataFrame) -> List[str]:
+    na_cols = (dataset.isna().sum() > 0).compute()
+    return list(na_cols[na_cols].index)
 
 
-def numeric(dataset):
+def numeric(dataset: dd.DataFrame) -> List[str]:
     """
     Get all numeric columns
     :param dataset:
-    :type dataset: dd.DataFrame
-    :return: List[str]
+    :return:
     """
 
     def is_numeric(col):
@@ -60,12 +28,11 @@ def numeric(dataset):
     return [col_name for col_name in dataset.columns if is_numeric(dataset[col_name])]
 
 
-def categorical(dataset):
+def categorical(dataset: dd.DataFrame) -> List[str]:
     """
     Get all categorical columns
-    :param dataset: 
-    :type dataset: dd.DataFrame
-    :return: List[str]
+    :param dataset:
+    :return:
     """
 
     def is_categorical(col):
@@ -74,20 +41,92 @@ def categorical(dataset):
     return [col_name for col_name in dataset.columns if is_categorical(dataset[col_name])]
 
 
-def numeric_binary(dataset):
+def binary(dataset: dd.DataFrame) -> List[str]:
     """
-    Get numeric columns with only 2 values and no null
     :param dataset:
-    :type dataset: dd.DataFrame
-    :return: List[str]
+    :return:
     """
-    binary_candidates = set(numeric(dataset))
-    part = dataset.get_partition(0).compute()
-    head = part.head()
-    binary_candidates = {col_name for col_name in binary_candidates
-                         if len(head[col_name].value_counts()) <= 2 and
-                         head[col_name].isna().sum() == 0}
-    binary_candidates = {col_name for col_name in binary_candidates
-                         if len(part[col_name].value_counts()) <= 2 and
-                         part[col_name].isna().sum() == 0}
-    return [i for i in dataset.columns if i in binary_candidates]
+    counts = {col_name: dataset[col_name].unique().shape[0].compute()
+              for col_name in dataset.columns}
+    return [i for i in dataset.columns if counts[i] == 2]
+
+
+class LogicMeta(type):
+
+    def __and__(self, other):
+        return And(self() if isinstance(self, type) else self,
+                   other() if isinstance(other, type) else other)
+
+    def __or__(self, other):
+        return Or(self() if isinstance(self, type) else self,
+                  other() if isinstance(other, type) else other)
+
+    def __invert__(self):
+        return Not(self() if isinstance(self, type) else self)
+
+    def __call__(cls, *args, **kwargs):
+        if len(args) == 1 and isinstance(args[0], dd.DataFrame):
+            return super(LogicMeta, cls).__call__()(args[0])
+        return super(LogicMeta, cls).__call__(*args, **kwargs)
+
+
+class Logic:
+    def __and__(self, other):
+        return And(self, other)
+
+    def __or__(self, other):
+        return Or(self, other)
+
+    def __invert__(self):
+        return Not(self)
+
+
+class Not(Logic, metaclass=LogicMeta):
+    def __init__(self, q):
+        self.q = q
+
+    def __call__(self, dataset):
+        cols = self.q(dataset)
+        return [i for i in dataset.columns if i not in cols]
+
+
+class Or(Logic, metaclass=LogicMeta):
+    def __init__(self, q1, q2):
+        self.q1 = q1
+        self.q2 = q2
+
+    def __call__(self, dataset):
+        cols1 = self.q1(dataset)
+        cols2 = self.q2(dataset)
+        return [i for i in dataset.columns if i in cols1 or i in cols2]
+
+
+class And(Logic, metaclass=LogicMeta):
+    def __init__(self, q1, q2):
+        self.q1 = q1
+        self.q2 = q2
+
+    def __call__(self, dataset):
+        cols1 = self.q1(dataset)
+        cols2 = self.q2(dataset)
+        return [i for i in dataset.columns if i in cols1 and i in cols2]
+
+
+class Numeric(Logic, metaclass=LogicMeta):
+    def __call__(self, dataset):
+        return numeric(dataset)
+
+
+class Categorical(Logic, metaclass=LogicMeta):
+    def __call__(self, dataset):
+        return categorical(dataset)
+
+
+class Binary(Logic, metaclass=LogicMeta):
+    def __call__(self, dataset):
+        return binary(dataset)
+
+
+class Nullable(Logic, metaclass=LogicMeta):
+    def __call__(self, dataset):
+        return nullable(dataset)
