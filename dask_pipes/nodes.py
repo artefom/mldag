@@ -8,7 +8,7 @@ import pandas.api.types
 from types import MethodType
 import inspect
 
-__all__ = ['as_node', 'NodeWrapper', 'RobustCategoriser', 'DateProcessor', 'AddNaCategory']
+__all__ = ['as_node', 'NodeWrapper', 'RobustCategoriser', 'DateProcessor', 'AddNaCategory', 'AddNaIndicator']
 
 
 class NodeWrapper(NodeBase):
@@ -130,23 +130,23 @@ class RobustCategoriser(NodeBase):
 
         return categories, coverage
 
-    def fit(self, dataset, y=None):
+    def fit(self, X, y=None):
         self.columns_ = self.columns
         self.frequent_vals_ = dict()
         self.drop_columns_ = list()
         self.coverage_ = dict()
 
         if self.columns_ is None:
-            self.columns_ = dataset.select_dtypes(object).columns
+            self.columns_ = X.select_dtypes(object).columns
 
         include_columns = self.include_columns or list()
         exclude_columns = self.exclude_columns or list()
-        self.columns_ = [i for i in dataset.columns if
+        self.columns_ = [i for i in X.columns if
                          (i in self.columns_ or i in include_columns)
                          and i not in exclude_columns]
 
         for col_name in self.columns_:
-            categories, coverage = self.get_col_stats(dataset[col_name])
+            categories, coverage = self.get_col_stats(X[col_name])
             if coverage >= self.min_coverage:
                 self.frequent_vals_[col_name] = categories
                 self.coverage_[col_name] = coverage
@@ -154,7 +154,7 @@ class RobustCategoriser(NodeBase):
                 self.drop_columns_.append(col_name)
         return self
 
-    def transform(self, dataset, y=None):
+    def transform(self, X, y=None):
         def get_col_transformer(categories, repl_val):
             frequent_val_set = set(categories)
 
@@ -163,19 +163,19 @@ class RobustCategoriser(NodeBase):
 
             return check_frequent
 
-        for col_name in dataset.columns:
+        for col_name in X.columns:
             if col_name in self.frequent_vals_:
                 col_categories = self.frequent_vals_[col_name]
                 if self.coverage_[col_name] < 1:
-                    dataset[col_name] = dataset[col_name].apply(
+                    X[col_name] = X[col_name].apply(
                         get_col_transformer(col_categories, self.replacement),
                         meta=(col_name, object))
                 cat_type = pd.api.types.CategoricalDtype(col_categories)
-                dataset[col_name] = dataset[col_name].astype(cat_type)
+                X[col_name] = X[col_name].astype(cat_type)
             elif col_name in self.drop_columns_:
                 if self.drop:
-                    dataset.drop(col_name, axis=1)
-        return dataset
+                    X.drop(col_name, axis=1)
+        return X
 
 
 class AddNaCategory(NodeBase):
@@ -187,20 +187,20 @@ class AddNaCategory(NodeBase):
         # Fittable
         self.categories_ = None
 
-    def fit(self, dataset, y=None):
+    def fit(self, X, y=None):
         self.categories_ = dict()
-        for col_name in dataset.columns:
-            col = dataset[col_name]
+        for col_name in X.columns:
+            col = X[col_name]
             if pd.api.types.is_categorical(col):
                 old_cats = list(col.dtype.categories)
                 new_cats = [self.unknown_cat] + old_cats
                 self.categories_[col_name] = pd.CategoricalDtype(new_cats)
         return self
 
-    def transform(self, dataset, y=None):
+    def transform(self, X, y=None):
         for col_name, dtype in self.categories_.items():
-            dataset[col_name] = dataset[col_name].astype(dtype)
-        return dataset
+            X[col_name] = X[col_name].astype(dtype)
+        return X
 
 
 class DateProcessor(NodeBase):
@@ -230,7 +230,7 @@ class DateProcessor(NodeBase):
         except TypeError:
             return False
 
-    def fit(self, dataset, y=None):
+    def fit(self, X, y=None):
         retro_date_mapping = self.retro_date_mapping or dict()
         self.timedeltas_ = list()
         self.datetimes_ = list()
@@ -242,10 +242,10 @@ class DateProcessor(NodeBase):
                 "Columns {} cannot be date and retro_date at same time".format(
                     set(retro_date_mapping.keys()).intersection(self.retro_dates_)))
 
-        for col_name in dataset.columns:
-            if DateProcessor.is_timedelta(dataset[col_name]):
+        for col_name in X.columns:
+            if DateProcessor.is_timedelta(X[col_name]):
                 self.timedeltas_.append(col_name)
-            elif DateProcessor.is_datetime(dataset[col_name]):
+            elif DateProcessor.is_datetime(X[col_name]):
                 if col_name in self.retro_dates_:
                     continue
                 if col_name not in retro_date_mapping:
@@ -255,16 +255,42 @@ class DateProcessor(NodeBase):
 
         return self
 
-    def transform(self, dataset, y=None):
+    def transform(self, X, y=None):
         for col_name in self.timedeltas_:
-            dataset[col_name] = dataset[col_name].apply(
+            X[col_name] = X[col_name].apply(
                 lambda x: x.total_seconds() if not pd.isna(x) else None,
                 meta=(col_name, float))
         for col_name in self.datetimes_:
             retro_date = self.datetime_retro_date_mapping_[col_name]
-            dataset[col_name] = (dataset[col_name] - dataset[retro_date]).apply(
+            X[col_name] = (X[col_name] - X[retro_date]).apply(
                 lambda x: x.total_seconds() if not pd.isna(x) else None,
                 meta=(col_name, float))
         for col in self.retro_dates_:
-            dataset = dataset.drop(col, axis=1)
-        return dataset
+            X = X.drop(col, axis=1)
+        return X
+
+
+class AddNaIndicator(NodeBase):
+
+    def __init__(self, name=None):
+        super().__init__(name=name)
+
+        self.indicator_cols_ = None
+
+    def fit(self, X, y=None):
+        self.indicator_cols_ = dict()
+        new_cols = set()
+        for col_name in X.columns:
+            na_col_name = '{}_na'.format(col_name)
+            counter = 0
+            while na_col_name in X.columns or na_col_name in new_cols:
+                na_col_name = '{}_na{}'.format(na_col_name, counter)
+                counter += 1
+            self.indicator_cols_[col_name] = na_col_name
+            new_cols.add(na_col_name)
+        return self
+
+    def transform(self, X, y=None):
+        for col_name, na_col_name in self.indicator_cols_.items():
+            X[na_col_name] = X[col_name].isna().astype(int)
+        return X

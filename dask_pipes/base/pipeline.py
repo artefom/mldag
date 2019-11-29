@@ -4,7 +4,6 @@ from typing import Any, Dict, List, Optional
 from types import MethodType
 from collections import namedtuple
 from sklearn.base import BaseEstimator, TransformerMixin
-import dask.dataframe as dd
 import inspect
 from ..utils import (ArgumentDescription,
                      get_arguments_description,
@@ -15,7 +14,7 @@ from ..utils import (ArgumentDescription,
 
 __all__ = ['NodeConnection', 'NodeBase', 'Pipeline', 'NodeBaseMeta', 'DummyNode']
 
-PipelineInput = namedtuple("PipelineInput", ['arg_name', 'downstream_slot', 'downstream_node'])
+PipelineInput = namedtuple("PipelineInput", ['arg_name', 'downstream_slot', 'downstream_node', 'default'])
 PipelineOutput = namedtuple("PipelineOutput", ['output_name', 'upstream_slot', 'upstream_node'])
 
 
@@ -418,7 +417,7 @@ class Pipeline(Graph):
             self.set_input_node(other)
             return other
         else:
-            raise NotImplementedError()
+            raise NotImplementedError(other.__class__.__name__)
 
     def __lshift__(self, other):
         """
@@ -585,9 +584,9 @@ class Pipeline(Graph):
 
     def set_input(self, node: NodeBase, arg_name=None, downstream_slot=None):
         self.validate_vertex(node)
-        node_inp = [i.name for i in node.inputs]
-        node_inp_no_default = [i.name for i in node.inputs if i.default == inspect._empty]
-        if len(node_inp) == 0:
+        node_inputs = {i.name: i for i in node.inputs}
+        node_inp_no_default = [inp_name for inp_name, inp in node_inputs.items() if inp.default == inspect._empty]
+        if len(node_inputs) == 0:
             raise DaskPipesException("{} does not have any inputs")
 
         if downstream_slot is None:
@@ -597,25 +596,25 @@ class Pipeline(Graph):
                 raise DaskPipesException("{} has multiple inputs without default value, "
                                          "specify downstream_slot".format(node))
 
-        if downstream_slot not in node_inp:
+        if downstream_slot not in node_inputs:
             raise DaskPipesException(
-                "{} does not have input {}; available: {}".format(node, downstream_slot, node_inp))
+                "{} does not have input {}; available: {}".format(node, downstream_slot, list(node_inputs.keys())))
 
         if arg_name is None:
             arg_name = downstream_slot
 
         current_args = [i for i in self._inputs if i.arg_name == arg_name]
         if len(current_args) > 0:
-            assert len(current_args) == 1
-            existing_arg = current_args[0]
-            if existing_arg.downstream_slot != downstream_slot or existing_arg.downstream_node is not node:
-                raise DaskPipesException("{} already has argument '{}'".format(self, arg_name))
-            else:
-                return
+            for existing_arg in current_args:
+                if existing_arg.downstream_slot == downstream_slot and existing_arg.downstream_node is node:
+                    return
+
+        default_val = node_inputs[downstream_slot].default
 
         self._inputs.append(PipelineInput(arg_name=arg_name,
                                           downstream_slot=downstream_slot,
-                                          downstream_node=node))
+                                          downstream_node=node,
+                                          default=default_val))
         # Assign node to current pipeline
         node.graph = self
         self._update_fit_transform_signatures()
@@ -646,29 +645,29 @@ class Pipeline(Graph):
         :return:
         """
         self.validate_vertex(node)
+        node_inputs = {i.name: i for i in node.inputs}
+
+        if len(node_inputs) == 0:
+            raise DaskPipesException("{} does not have any inputs.".format(node))
 
         if suffix is None:
             suffix = ''
 
-        node_inputs = node.inputs
-        if len(node_inputs) == 0:
-            raise DaskPipesException("{} does not have any inputs.".format(node))
-        for op_input in node_inputs:
-            downstream_slot = op_input.name
-
-            if downstream_slot is None:
-                node_inputs_no_default = [i for i in node.inputs if i.default == inspect._empty]
-                if len(node_inputs_no_default) > 1:
-                    raise DaskPipesException(
-                        "{} has multiple inputs, "
-                        "downstream_slot must be one of {}".format(node, [i.name for i in node.inputs]))
-                downstream_slot = node_inputs_no_default[0].name
-
+        for inp_name, inp in node_inputs.items():
+            downstream_slot = inp.name
             arg_name = '{}{}'.format(downstream_slot, suffix)
+            current_args = [i for i in self._inputs if i.arg_name == arg_name]
+            if len(current_args) > 0:
+                for existing_arg in current_args:
+                    if existing_arg.downstream_slot == downstream_slot and existing_arg.downstream_node is node \
+                            and (existing_arg.default is inp.default or existing_arg.default == inp.default):
+                        # Input already exists
+                        continue
 
             self._inputs.append(PipelineInput(arg_name=arg_name,
                                               downstream_slot=downstream_slot,
-                                              downstream_node=node))
+                                              downstream_node=node,
+                                              default=inp.default))
         node.graph = self
 
         self._update_fit_transform_signatures()
@@ -684,6 +683,26 @@ class Pipeline(Graph):
 
     def _reset_transform_signature(self):
         self.transform = MethodType(self.__class__.transform, self)
+
+    def _get_input_defaults(self):
+        no_default_inp = set()
+        input_defaults = dict()
+        for inp in self._inputs:
+            if inp.arg_name in no_default_inp:
+                continue
+            if inp.default == inspect._empty:
+                no_default_inp.add(inp.arg_name)
+                continue
+            else:
+                default_val = inp.default
+                if inp.arg_name in input_defaults:
+                    existing_default = input_defaults[inp.arg_name]
+                    if (default_val is not existing_default) and (default_val != existing_default):
+                        del input_defaults[inp.arg_name]
+                        no_default_inp.add(inp.arg_name)
+                else:
+                    input_defaults[inp.arg_name] = inp.default
+        return input_defaults
 
     def _update_fit_transform_signatures(self):
         """
@@ -712,17 +731,28 @@ class Pipeline(Graph):
             {p.name for p in new_params_kwargs_only})
         seen_params = set()
 
-        if len(self._inputs) > 0:
-            for inp in self._inputs:
+        inp_defaults = self._get_input_defaults()
+        inputs_no_default = [i for i in self._inputs if i.arg_name not in inp_defaults]
+        inputs_w_default = [i for i in self._inputs if i.arg_name in inp_defaults]
+        inputs = inputs_no_default + inputs_w_default
+
+        inputs_no_default_names = {i.arg_name for i in inputs_no_default}
+
+        if len(inputs) > 0:
+            for inp in inputs:
                 if inp.arg_name in reserved:
                     raise DaskPipesException("Input name {} is reserved".format(inp.arg_name))
                 if inp.arg_name in seen_params:
                     continue
+
+                is_only_positional = (inp.arg_name in inputs_no_default_names and
+                                      len(inputs_no_default_names) == 1)
+
                 param = inspect.Parameter(
                     name=inp.arg_name,
                     kind=inspect.Parameter.POSITIONAL_OR_KEYWORD
-                    if len(self._inputs) == 1 else inspect.Parameter.KEYWORD_ONLY,
-                    default=None)
+                    if is_only_positional else inspect.Parameter.KEYWORD_ONLY,
+                    default=inp_defaults.get(inp.arg_name, inspect._empty))
 
                 if param.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD and param.default == inspect._empty:
                     new_params_pos.append(param)
@@ -808,37 +838,18 @@ class Pipeline(Graph):
         return op_connection
 
     def _parse_arguments(self, *args, **kwargs) -> Dict[str, Any]:
-
-        expected_inputs = {i.arg_name for i in self._inputs}
-        if len(expected_inputs) == 0 and (len(args) > 0 or len(kwargs) > 0):
-            raise DaskPipesException(
-                "{} Does not have any inputs. (used .set_input(op) to set nodes as input)".format(self))
-
-        unseen_inputs = {i for i in expected_inputs}
-
-        rv = {k: v for k, v in kwargs.items()}
-
-        if len(args) > 0:
-            if len(args) > 1:
-                raise DaskPipesException("Multiple positional arguments not allowed")
-            if len(rv) > 0:
-                raise DaskPipesException("Cannot mix positional and key-word arguments")
-            if len(expected_inputs) > 1:
-                raise DaskPipesException(
-                    "Positional arguments not allowed in case of multiple inputs needed. "
-                    "Expected {} key-word arguments; got {} positional".format(len(expected_inputs),
-                                                                               len(args)))
-            rv[next(iter(expected_inputs))] = next(iter(args))
-
-        for k, v in rv.items():
-            if k not in expected_inputs:
-                raise DaskPipesException(
-                    "Unexpected argument: '{}'. Should be one of {}".format(
-                        k, expected_inputs
-                    ))
-            unseen_inputs.remove(k)
-
-        return rv
+        """
+        Parse fit arguments and return dictionary of values.
+        If argument has a default value and not provided,
+        result dictionary will contain default value for that argument
+        :param args: fit arguments
+        :param kwargs: fit key-word arguments
+        :return:
+        """
+        rv = inspect.getcallargs(self.fit, *args, **kwargs)
+        # return parameter mapping except self
+        fit_args = {i.name for i in inspect.signature(self.fit).parameters.values()}
+        return {k: v for k, v in rv.items() if k in fit_args}
 
     @staticmethod
     def _parse_node_output(node, output):
@@ -907,7 +918,21 @@ class Pipeline(Graph):
         args = self._parse_arguments(*args, **kwargs)
         node_arguments = {op: dict() for op in self.vertices}
         for inp in self._inputs:
-            node_arguments[inp.downstream_node][inp.downstream_slot] = args.get(inp.arg_name, None)
+            # We want to be extremely careful on each step
+            # Even though, _parse_arguments must return full proper dictionary, filled with default values
+            # Double-check it here
+            if inp.arg_name in args:
+                if inp.arg_name in args:
+                    node_arguments[inp.downstream_node][inp.downstream_slot] = args[inp.arg_name]
+                else:
+                    if inp.default == inspect._empty:
+                        raise DaskPipesException("Argument {} does not have default value".format(inp.arg_name))
+                    node_arguments[inp.downstream_node][inp.downstream_slot] = inp.default
+            else:
+                raise DaskPipesException(
+                    "Pipeline input {}->{}['{}'] not provided".format(inp.arg_name,
+                                                                      inp.downstream_node,
+                                                                      inp.downstream_slot, ))
 
         outputs = dict()
 

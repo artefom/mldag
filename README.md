@@ -48,7 +48,7 @@ print(ds.compute())
 process_pipeline.fit(
     meta_folder    = meta_folder,
     persist_folder = persist_folder,
-    dataset        = ds,
+    X        = ds,
     dataset_name   = dataset_name)
 
 # Transform dataset
