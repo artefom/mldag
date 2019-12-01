@@ -76,7 +76,7 @@ class PipelineInput(namedtuple("_PipelineInput", ['name',
 PipelineOutput = namedtuple("PipelineOutput", ['output_name', 'upstream_slot', 'upstream_node'])
 
 
-def getcallargs_inverse(func, **callargs):
+def getcallargs_inverse(func, **callargs):  # noqa C901
     sign = inspect.signature(func)
     args = list()
     kwargs = dict()
@@ -101,9 +101,19 @@ def getcallargs_inverse(func, **callargs):
                 raise DaskPipesException("Cannot fill variadic positional {}, "
                                          "since preceding positional "
                                          "parameters are missing".format(parameter.name))
-            args.extend(values)
+            try:
+                args.extend(values)
+            except TypeError:
+                raise DaskPipesException(
+                    "Tried to pass non-terable parameter to variadic positional argument '{}'".format(
+                        parameter.name)) from None
         elif parameter.kind == inspect.Parameter.VAR_KEYWORD:
-            kwargs = {**kwargs, **values}
+            try:
+                kwargs = {**kwargs, **values}
+            except TypeError:
+                raise DaskPipesException(
+                    "Tried to pass non-mapping parameter to variadic key-word argument '{}'".format(
+                        parameter.name)) from None
         else:
             kwargs[parameter.name] = values
     return tuple(args), kwargs

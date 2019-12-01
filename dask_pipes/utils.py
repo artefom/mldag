@@ -53,7 +53,7 @@ def get_arguments_description(func: Callable) -> List[inspect.Parameter]:
 
 def get_return_description(func: Callable) -> List[ReturnDescription]:
     func_name = func.__qualname__
-    return_type = func.__annotations__.get('return', Any)
+    return_type = func.__annotations__.get('return', object)
     if isinstance(return_type, tuple) or isinstance(return_type, list):
         if len(return_type) == 0:
             raise DaskPipesException("return type '{}' of {} not understood".format(repr(return_type), func_name))
@@ -61,11 +61,13 @@ def get_return_description(func: Callable) -> List[ReturnDescription]:
         for v in return_type:
             if isinstance(v, tuple) or isinstance(v, list):
                 if len(v) != 2:
-                    raise NotImplementedError()
+                    raise DaskPipesException(
+                        "Return type annotations must be "
+                        "((var_name, var_type1), (var_name2, var_type2))")
                 var_name = v[0]
                 var_type = v[1]
             elif isinstance(v, str):
-                var_name = v[0]
+                var_name = v
                 var_type = object
             else:
                 raise NotImplementedError()

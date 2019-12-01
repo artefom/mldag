@@ -782,11 +782,6 @@ class Pipeline(Graph, metaclass=PipelineMeta):
         return output
 
     def _check_arguements(self, node, edge, node_arguments, downstream_node, node_result):
-        if edge.downstream_slot in node_arguments[downstream_node]:
-            raise DaskPipesException(
-                "Duplicate argument for {}['{}']. "
-                "Already contains {}".format(downstream_node, edge.downstream_slot,
-                                             node_arguments[downstream_node][edge.downstream_slot]))
         if downstream_node not in node_arguments:
             raise DaskPipesException("Pipeline does not contain {}".format(downstream_node))
         if edge.upstream_slot not in node_result:
@@ -859,7 +854,53 @@ class Pipeline(Graph, metaclass=PipelineMeta):
                         unused_output.remove(edge.upstream_slot)
 
                     # Populate arguments of downstream vertex
-                    node_arguments[downstream_node][edge.downstream_slot] = node_result[edge.upstream_slot]
+                    downstream_param = next((i for i in downstream_node.inputs if i.name == edge.downstream_slot))
+
+                    # Properly handle variadic return arguments
+                    if edge.upstream_slot[0] == '*' or edge.upstream_slot[:2] == '**':
+                        upstream_val = node_result[edge.upstream_slot]
+                    else:
+                        if downstream_param.kind == inspect.Parameter.VAR_POSITIONAL:
+                            upstream_val = (node_result[edge.upstream_slot],)
+                        elif downstream_param.kind == inspect.Parameter.VAR_KEYWORD:
+                            upstream_val = {edge.upstream_slot: node_result[edge.upstream_slot]}
+                        else:
+                            upstream_val = node_result[edge.upstream_slot]
+
+                    downstream_args = node_arguments[downstream_node]
+                    if downstream_param.kind == inspect.Parameter.VAR_POSITIONAL:
+                        if edge.downstream_slot not in downstream_args:
+                            downstream_args[edge.downstream_slot] = list()
+                        try:
+                            downstream_args[edge.downstream_slot].extend(upstream_val)
+                        except TypeError:
+                            raise DaskPipesException(
+                                "{} returned non-iterable "
+                                "as variadic '{}'. "
+                                "Expected tuple, received {}".format(node, edge.upstream_slot,
+                                                                     repr(upstream_val))) from None
+                    elif downstream_param.kind == inspect.Parameter.VAR_KEYWORD:
+                        if edge.downstream_slot not in downstream_args:
+                            downstream_args[edge.downstream_slot] = dict()
+                        downstream_dict = downstream_args[edge.downstream_slot]
+                        try:
+                            for k, v in upstream_val.items():
+                                if k in downstream_dict:
+                                    raise DaskPipesException(
+                                        "Duplicate key-word argument "
+                                        "'{}' for parameter '{}'".format(k, edge.downstream_slot))
+                                downstream_dict[k] = v
+                        except AttributeError:
+                            raise DaskPipesException(
+                                "{} returned non-mapping "
+                                "as variadic '{}'. "
+                                "Expected dict; received {}".format(node, edge.upstream_slot,
+                                                                    repr(upstream_val))) from None
+                    else:
+                        if edge.downstream_slot in downstream_args:
+                            raise DaskPipesException(
+                                "Duplicate argument for parameter '{}'".format(edge.downstream_slot))
+                        downstream_args[edge.downstream_slot] = upstream_val
 
                 for upstream_slot in unused_output:
                     outputs[(node, upstream_slot)] = node_result[upstream_slot]
