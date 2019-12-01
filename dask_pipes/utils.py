@@ -12,12 +12,11 @@ import importlib
 from .exceptions import DaskPipesException
 
 __all__ = ['read_file', 'dump_yaml', 'load_yaml', 'cleanup_empty_dirs', 'try_create_dir', 'import_class', 'is_int',
-           'assert_subclass', 'get_arguments_description', 'get_return_description', 'ArgumentDescription',
+           'assert_subclass', 'get_arguments_description', 'get_return_description',
            'ReturnDescription', 'is_categorical', 'replace_signature']
 
 VALIDATE_SUBCLASSES = False
 
-ArgumentDescription = namedtuple("ArgumentDescription", ['name', 'type', 'description', 'default'])
 ReturnDescription = namedtuple("ReturnDescription", ['name', 'type', 'description'])
 
 RETURN_UNNAMED = 'result'
@@ -27,6 +26,7 @@ def replace_signature(func, sign, doc=None):
     def wrapped(*args, **kwargs):
         return func(*args, **kwargs)
 
+    wrapped.__func__ = func
     wrapped.__signature__ = sign
     wrapped.__doc__ = doc or func.__doc__
     wrapped.__name__ = func.__name__
@@ -47,14 +47,8 @@ def is_categorical(type: Type) -> bool:
     return True
 
 
-def get_arguments_description(func: Callable, skip_first=1) -> List[ArgumentDescription]:
-    annotations = func.__annotations__
-    params = list(inspect.signature(func).parameters.values())
-    rv = [ArgumentDescription(name=param.name,
-                              type=annotations.get(param.name, object),
-                              description=None,
-                              default=param.default) for param in params]
-    return rv
+def get_arguments_description(func: Callable) -> List[inspect.Parameter]:
+    return list(inspect.signature(func).parameters.values())
 
 
 def get_return_description(func: Callable) -> List[ReturnDescription]:

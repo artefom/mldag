@@ -1,21 +1,24 @@
 from .graph import Graph, VertexBase, EdgeBase, VertexWidthFirst
 from ..exceptions import DaskPipesException
 from typing import Any, Dict, List, Optional
-from types import MethodType
-from collections import namedtuple
 from sklearn.base import BaseEstimator, TransformerMixin
 import inspect
-from ..utils import (ArgumentDescription,
-                     get_arguments_description,
+from ..utils import (get_arguments_description,
                      get_return_description,
                      ReturnDescription,
-                     assert_subclass,
-                     replace_signature)
+                     assert_subclass)
+from ._pipeline_utils import (PipelineInput,
+                              PipelineOutput,
+                              get_input_signature,
+                              set_fit_signature,
+                              set_transform_signature,
+                              reset_transform_signature,
+                              reset_fit_signature,
+                              getcallargs_inverse,
+                              validate_fit_transform)
+from copy import deepcopy
 
 __all__ = ['NodeConnection', 'NodeBase', 'Pipeline', 'NodeBaseMeta', 'DummyNode']
-
-PipelineInput = namedtuple("PipelineInput", ['arg_name', 'downstream_slot', 'downstream_node', 'default'])
-PipelineOutput = namedtuple("PipelineOutput", ['output_name', 'upstream_slot', 'upstream_node'])
 
 
 class NodeSlot:
@@ -121,6 +124,7 @@ class NodeBaseMeta(type):
         def fit_wrapped(self, *args, **kwargs):
             return func(self, *args, **kwargs)
 
+        fit_wrapped.__func__ = func
         fit_wrapped.__signature__ = inspect.signature(func)  # transfer signature
         fit_wrapped.__doc__ = func.__doc__  # preserve docstring
         return fit_wrapped
@@ -132,15 +136,7 @@ class NodeBaseMeta(type):
         For the time being, it seems pretty much obsolete.
         Just left it here as codebase for future improvements
         """
-        if 'fit' in attrs:
-            attrs['fit'] = mcs.wrap_fit(attrs['fit'])
-        else:
-            raise DaskPipesException("Class {} does not have fit method".format(name))
-
-        # Check transform parameters
-        if 'transform' not in attrs:
-            raise DaskPipesException("Class {} does not have transform method".format(name))
-
+        validate_fit_transform(name, attrs)
         return super().__new__(mcs, name, bases, attrs)
 
 
@@ -197,11 +193,10 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         Since this is defined in meta, we can get node outputs just based on it's class
         :return: List of named tuples 'ReturnDescription' with argument name, type and description
         """
-        ret_descr = get_return_description(getattr(self, 'transform'))
-        return ret_descr
+        return get_return_description(getattr(self, 'transform'))
 
     @property
-    def inputs(self) -> List[ArgumentDescription]:
+    def inputs(self) -> List[inspect.Parameter]:
         """
         Inputs of an node - parameters of self.fit function
         must be equal to parameters of self.transform
@@ -209,8 +204,7 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         Since this is defined in meta, we can get node outputs just based on it's class
         :return:
         """
-        arg_descr = get_arguments_description(getattr(self, 'fit'))
-        return arg_descr
+        return get_arguments_description(getattr(self, 'fit'))
 
     @staticmethod
     def validate(node):
@@ -377,7 +371,16 @@ class DummyNode(NodeBase):
         return X
 
 
-class Pipeline(Graph):
+class PipelineMeta(type):
+    def __new__(mcs, name, bases, attrs):
+        """
+        Run validations on pipeline's fit and transform signatures
+        """
+        validate_fit_transform(name, attrs, obligatory_variadic=True, allow_default=False)
+        return super().__new__(mcs, name, bases, attrs)
+
+
+class Pipeline(Graph, metaclass=PipelineMeta):
     """
     Pipeline is a graph structure, containing relationships between NodeBase (vertices)
     with NodeConnection as edges
@@ -398,6 +401,8 @@ class Pipeline(Graph):
         # For naming unnamed nodes
         self.node_name_counter = 0
 
+        self._params_downstream = None
+
     @staticmethod
     def _get_default_node_name(node, counter=None):
         if counter is None or counter == 0:
@@ -411,10 +416,10 @@ class Pipeline(Graph):
         :return:
         """
         if isinstance(other, NodeSlot):
-            self.set_input(other.node, arg_name=other.slot, downstream_slot=other.slot)
+            self.set_input(other.node, name=other.slot, downstream_slot=other.slot)
             return other.node
         elif issubclass(other.__class__, NodeBase):
-            self.set_input_node(other)
+            self.set_input(other)
             return other
         else:
             raise NotImplementedError(other.__class__.__name__)
@@ -501,16 +506,12 @@ class Pipeline(Graph):
         return outputs
 
     @property
-    def inputs(self) -> List[str]:
+    def inputs(self) -> List[inspect.Parameter]:
         """
         Get human-friendly list of names of current pipeline inputs without duplicates
         :return: list of argument names for fit function
         """
-        inputs = []
-        for arg in self._inputs:
-            if arg.arg_name not in inputs:
-                inputs.append(arg.arg_name)
-        return inputs
+        return get_input_signature(self)[0][1:]
 
     @property
     def outputs(self) -> List[str]:
@@ -560,15 +561,15 @@ class Pipeline(Graph):
         :param downstream_slot:
         :return:
         """
-        self.set_input(other, arg_name=upstream_slot, downstream_slot=downstream_slot)
+        self.set_input(other, name=upstream_slot, downstream_slot=downstream_slot)
 
-    def remove_input(self, arg_name):
+    def remove_input(self, name):
         len_before = len(self._inputs)
         if len_before == 0:
             raise DaskPipesException("{} Does not have any arguments".format(self))
-        self._inputs = [i for i in self._inputs if i.arg_name == arg_name]
+        self._inputs = [i for i in self._inputs if i.name == name]
         if len(self._inputs) == len_before:
-            raise DaskPipesException("{} Does not have argument {}".format(self, arg_name))
+            raise DaskPipesException("{} Does not have argument {}".format(self, name))
         self._update_fit_transform_signatures()
 
     def remove_input_node(self, node: NodeBase):
@@ -582,127 +583,52 @@ class Pipeline(Graph):
         self._inputs = [i for i in self._inputs if i.downstream_node is not node]
         self._update_fit_transform_signatures()
 
-    def set_input(self, node: NodeBase, arg_name=None, downstream_slot=None):
+    def set_input(self, node: NodeBase, name=None, downstream_slot=None, suffix: Optional[str] = None):  # noqa: C901
         self.validate_vertex(node)
+        # Assign node to current pipeline
+        node.graph = self
+
         node_inputs = {i.name: i for i in node.inputs}
-        node_inp_no_default = [inp_name for inp_name, inp in node_inputs.items() if inp.default == inspect._empty]
         if len(node_inputs) == 0:
             raise DaskPipesException("{} does not have any inputs")
 
         if downstream_slot is None:
-            if len(node_inp_no_default) == 1:
-                downstream_slot = node_inp_no_default[0]
-            else:
-                raise DaskPipesException("{} has multiple inputs without default value, "
-                                         "specify downstream_slot".format(node))
+            if name is not None and len(node_inputs) > 1:
+                raise DaskPipesException(
+                    "Node {} has multiple inputs, specific "
+                    "pipeline argument name not supported. "
+                    "Use suffix instead")
+            for inp in node_inputs.keys():
+                self.set_input(node, name, inp, suffix=suffix)
+            return
 
         if downstream_slot not in node_inputs:
             raise DaskPipesException(
                 "{} does not have input {}; available: {}".format(node, downstream_slot, list(node_inputs.keys())))
 
-        if arg_name is None:
-            arg_name = downstream_slot
+        if name is None:
+            name = downstream_slot
+            if suffix is None:
+                suffix = '_{}'.format(node.name)
 
-        current_args = [i for i in self._inputs if i.arg_name == arg_name]
+        if suffix is not None:
+            name = '{}{}'.format(name, suffix)
+
+        current_args = [i for i in self._inputs if i.name == name]
         if len(current_args) > 0:
             for existing_arg in current_args:
                 if existing_arg.downstream_slot == downstream_slot and existing_arg.downstream_node is node:
                     return
 
-        default_val = node_inputs[downstream_slot].default
+        param = node_inputs[downstream_slot]
 
-        self._inputs.append(PipelineInput(arg_name=arg_name,
+        self._inputs.append(PipelineInput(name=name,
                                           downstream_slot=downstream_slot,
                                           downstream_node=node,
-                                          default=default_val))
-        # Assign node to current pipeline
-        node.graph = self
+                                          default=param.default,
+                                          kind=param.kind,
+                                          annotation=param.annotation))
         self._update_fit_transform_signatures()
-
-    def set_input_node(self, node: NodeBase, suffix=None):
-        """
-        Register node as pipeline's input.
-        All node inputs should be passed in fit function
-        by default, uses fit argument names equal to node input arguments.
-
-        Caution:
-        If multiple nodes which have same input names are set as input,
-        pipeline will pass data from argument to multiple nodes
-        suffix can be used to differentiate inputs for nodes with same argument names
-
-        Example:
-        >>> # Construct pipeline and nodes
-        >>> p = Pipeline()
-        >>> op1 = DummyNode('op1')
-        >>>
-        >>> # Assign input for op1 as pipeline input and add it to pipeline
-        >>> p.set_inputs_all(op1, suffix='_op1')
-        >>> # p.fit signature changed
-        >>> # also, p.inputs now returns ['dataset_op1']
-
-        :param node: node to set as input
-        :param suffix: suffix to add to node's inputs before setting them as pipeline inputs
-        :return:
-        """
-        self.validate_vertex(node)
-        node_inputs = {i.name: i for i in node.inputs}
-
-        if len(node_inputs) == 0:
-            raise DaskPipesException("{} does not have any inputs.".format(node))
-
-        if suffix is None:
-            suffix = ''
-
-        for inp_name, inp in node_inputs.items():
-            downstream_slot = inp.name
-            arg_name = '{}{}'.format(downstream_slot, suffix)
-            current_args = [i for i in self._inputs if i.arg_name == arg_name]
-            if len(current_args) > 0:
-                for existing_arg in current_args:
-                    if existing_arg.downstream_slot == downstream_slot and existing_arg.downstream_node is node \
-                            and (existing_arg.default is inp.default or existing_arg.default == inp.default):
-                        # Input already exists
-                        continue
-
-            self._inputs.append(PipelineInput(arg_name=arg_name,
-                                              downstream_slot=downstream_slot,
-                                              downstream_node=node,
-                                              default=inp.default))
-        node.graph = self
-
-        self._update_fit_transform_signatures()
-
-    def _set_fit_signature(self, sign: inspect.Signature):
-        self.fit = MethodType(replace_signature(Pipeline.fit, sign), self)
-
-    def _set_transform_signature(self, sign: inspect.Signature):
-        self.transform = MethodType(replace_signature(Pipeline.transform, sign), self)
-
-    def _reset_fit_signature(self):
-        self.fit = MethodType(self.__class__.fit, self)
-
-    def _reset_transform_signature(self):
-        self.transform = MethodType(self.__class__.transform, self)
-
-    def _get_input_defaults(self):
-        no_default_inp = set()
-        input_defaults = dict()
-        for inp in self._inputs:
-            if inp.arg_name in no_default_inp:
-                continue
-            if inp.default == inspect._empty:
-                no_default_inp.add(inp.arg_name)
-                continue
-            else:
-                default_val = inp.default
-                if inp.arg_name in input_defaults:
-                    existing_default = input_defaults[inp.arg_name]
-                    if (default_val is not existing_default) and (default_val != existing_default):
-                        del input_defaults[inp.arg_name]
-                        no_default_inp.add(inp.arg_name)
-                else:
-                    input_defaults[inp.arg_name] = inp.default
-        return input_defaults
 
     def _update_fit_transform_signatures(self):
         """
@@ -710,72 +636,22 @@ class Pipeline(Graph):
         Infers and updates signatures of fit and transform methods for user-friendly hints
         :return:
         """
-        fit_func = self.__class__.fit  # Since fit is method, it has __func__
-        transform_func = self.__class__.transform  # Since transform is method, it has __func__
-        fit_sign = inspect.signature(fit_func)
-        transform_sign = inspect.signature(transform_func)
+        if len(self._inputs) > 0:
+            new_params, params_downstream = get_input_signature(self)
+            self._params_downstream = params_downstream
+            return_annotation = self.__class__.fit.__annotations__.get('return', inspect._empty)
 
-        original_prams = list(fit_sign.parameters.values())
-
-        new_params_pos_only = [i for i in original_prams if i.kind == inspect.Parameter.POSITIONAL_ONLY]
-        new_params_pos = [i for i in original_prams if
-                          i.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD and
-                          i.default == inspect._empty]
-        new_params_kwargs = [i for i in original_prams if
-                             i.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD and
-                             i.default != inspect._empty]
-        new_params_kwargs_only = [i for i in original_prams if i.kind == inspect.Parameter.KEYWORD_ONLY]
-        reserved = {p.name for p in new_params_pos_only}.union(
-            {p.name for p in new_params_pos}).union(
-            {p.name for p in new_params_kwargs}).union(
-            {p.name for p in new_params_kwargs_only})
-        seen_params = set()
-
-        inp_defaults = self._get_input_defaults()
-        inputs_no_default = [i for i in self._inputs if i.arg_name not in inp_defaults]
-        inputs_w_default = [i for i in self._inputs if i.arg_name in inp_defaults]
-        inputs = inputs_no_default + inputs_w_default
-
-        inputs_no_default_names = {i.arg_name for i in inputs_no_default}
-
-        if len(inputs) > 0:
-            for inp in inputs:
-                if inp.arg_name in reserved:
-                    raise DaskPipesException("Input name {} is reserved".format(inp.arg_name))
-                if inp.arg_name in seen_params:
-                    continue
-
-                is_only_positional = (inp.arg_name in inputs_no_default_names and
-                                      len(inputs_no_default_names) == 1)
-
-                param = inspect.Parameter(
-                    name=inp.arg_name,
-                    kind=inspect.Parameter.POSITIONAL_OR_KEYWORD
-                    if is_only_positional else inspect.Parameter.KEYWORD_ONLY,
-                    default=inp_defaults.get(inp.arg_name, inspect._empty))
-
-                if param.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD and param.default == inspect._empty:
-                    new_params_pos.append(param)
-                elif param.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD:
-                    new_params_kwargs.append(param)
-                elif param.kind == inspect.Parameter.KEYWORD_ONLY:
-                    new_params_kwargs_only.append(param)
-                else:
-                    raise TypeError("Invalid parameter king")
-                seen_params.add(inp.arg_name)
-
-            new_params = new_params_pos_only + new_params_pos + new_params_kwargs + new_params_kwargs_only
-
-            self._set_fit_signature(inspect.Signature(
+            set_fit_signature(self, inspect.Signature(
                 parameters=new_params,
-                return_annotation=fit_sign.return_annotation))
+                return_annotation=return_annotation))
 
-            self._set_transform_signature(inspect.Signature(
+            set_transform_signature(self, inspect.Signature(
                 parameters=new_params,
-                return_annotation=transform_sign.return_annotation))
+                return_annotation=return_annotation))
         else:
-            self._reset_fit_signature()
-            self._reset_transform_signature()
+            self._params_downstream = None
+            reset_fit_signature(self)
+            reset_transform_signature(self)
 
     def connect(self,
                 upstream: NodeBase,
@@ -826,16 +702,16 @@ class Pipeline(Graph):
         return self.add_edge(edge)
 
     # Change signature of functions
-    def add_edge(self, op_connection: NodeConnection, edge_id=None) -> NodeConnection:
+    def add_edge(self, node_connection: NodeConnection, edge_id=None) -> NodeConnection:
         """
         Add NodeConnection to current pipeline
-        op_connection must already have assigned upstream and downstream nodes
-        :param op_connection: connection to add
+        node_connection must already have assigned upstream and downstream nodes
+        :param node_connection: connection to add
         :param edge_id: integer id of edge, auto-increment if None (used for deserialization from disk)
         :return:
         """
-        super().add_edge(op_connection, edge_id=edge_id)
-        return op_connection
+        super().add_edge(node_connection, edge_id=edge_id)
+        return node_connection
 
     def _parse_arguments(self, *args, **kwargs) -> Dict[str, Any]:
         """
@@ -846,10 +722,23 @@ class Pipeline(Graph):
         :param kwargs: fit key-word arguments
         :return:
         """
-        rv = inspect.getcallargs(self.fit, *args, **kwargs)
-        # return parameter mapping except self
-        fit_args = {i.name for i in inspect.signature(self.fit).parameters.values()}
-        return {k: v for k, v in rv.items() if k in fit_args}
+
+        # Used for injection of custom signature before passing to getcallargs
+        # We need to distill self.fit from parameters passed to pipeline against parameters passed to input nodes
+        def fit(*args, **kwargs):
+            pass
+
+        fit_params = [param for param in self.inputs if param.name in self._params_downstream]
+        fit.__signature__ = inspect.Signature(
+            parameters=fit_params
+        )
+
+        var_pos = {param.name for param in fit_params if param.kind == inspect.Parameter.VAR_POSITIONAL}
+        var_key = {param.name for param in fit_params if param.kind == inspect.Parameter.VAR_KEYWORD}
+        rv = inspect.getcallargs(fit, *args, **kwargs)
+        # Replace variadic with dummy asterisk
+        # Doing this, because one variadic can have different names
+        return {(k if k not in var_pos else '*') if k not in var_key else '**': v for k, v in rv.items()}
 
     @staticmethod
     def _parse_node_output(node, output):
@@ -892,22 +781,22 @@ class Pipeline(Graph):
 
         return output
 
-    def _check_arguements(self, op, edge, node_arguments, downstream_op, op_result):
-        if edge.downstream_slot in node_arguments[downstream_op]:
+    def _check_arguements(self, node, edge, node_arguments, downstream_node, node_result):
+        if edge.downstream_slot in node_arguments[downstream_node]:
             raise DaskPipesException(
                 "Duplicate argument for {}['{}']. "
-                "Already contains {}".format(downstream_op, edge.downstream_slot,
-                                             node_arguments[downstream_op][edge.downstream_slot]))
-        if downstream_op not in node_arguments:
-            raise DaskPipesException("Pipeline does not contain {}".format(downstream_op))
-        if edge.upstream_slot not in op_result:
-            if len(op_result) == 0:
-                raise DaskPipesException("Node {} did not return anything!".format(op))
+                "Already contains {}".format(downstream_node, edge.downstream_slot,
+                                             node_arguments[downstream_node][edge.downstream_slot]))
+        if downstream_node not in node_arguments:
+            raise DaskPipesException("Pipeline does not contain {}".format(downstream_node))
+        if edge.upstream_slot not in node_result:
+            if len(node_result) == 0:
+                raise DaskPipesException("Node {} did not return anything!".format(node))
             raise DaskPipesException(
                 "Node {} did not return expected {}; "
-                "recieved {}".format(op, edge.upstream_slot, list(op_result.keys())))
+                "recieved {}".format(node, edge.upstream_slot, list(node_result.keys())))
 
-    def _iterate_graph(self, func, *args, **kwargs):
+    def _iterate_graph(self, func, *args, **kwargs):  # noqa: C901
         """
         Helper function used in fit and transform methods
         :param func: function to apply during iteration
@@ -916,86 +805,103 @@ class Pipeline(Graph):
         :return:
         """
         args = self._parse_arguments(*args, **kwargs)
-        node_arguments = {op: dict() for op in self.vertices}
+        node_arguments = {node: dict() for node in self.vertices}
         for inp in self._inputs:
             # We want to be extremely careful on each step
             # Even though, _parse_arguments must return full proper dictionary, filled with default values
             # Double-check it here
-            if inp.arg_name in args:
-                if inp.arg_name in args:
-                    node_arguments[inp.downstream_node][inp.downstream_slot] = args[inp.arg_name]
-                else:
-                    if inp.default == inspect._empty:
-                        raise DaskPipesException("Argument {} does not have default value".format(inp.arg_name))
-                    node_arguments[inp.downstream_node][inp.downstream_slot] = inp.default
+            if inp.kind == inspect.Parameter.VAR_KEYWORD:
+                inp_name = '**'
+            elif inp.kind == inspect.Parameter.VAR_POSITIONAL:
+                inp_name = '*'
+            else:
+                inp_name = inp.name
+            if inp_name in args:
+                node_arguments[inp.downstream_node][inp.downstream_slot] = args[inp_name]
             else:
                 raise DaskPipesException(
-                    "Pipeline input {}->{}['{}'] not provided".format(inp.arg_name,
-                                                                      inp.downstream_node,
-                                                                      inp.downstream_slot, ))
-
+                    "Pipeline input {}->{}['{}'] not provided "
+                    "and does not have default value".format(inp.name,
+                                                             inp.downstream_node,
+                                                             inp.downstream_slot, ))
         outputs = dict()
 
-        for op in VertexWidthFirst(self):
+        for node in VertexWidthFirst(self):
             try:
-                op: NodeBase
-                op_args = node_arguments[op]
+                node: NodeBase
+                node_callargs = node_arguments[node]
 
-                if len(op_args) == 0:
-                    raise DaskPipesException("No input for node {}".format(op))
+                if len(node_callargs) == 0:
+                    raise DaskPipesException("No input for node {}".format(node))
 
-                downstream_edges = self.get_downstream_edges(op)
+                downstream_edges = self.get_downstream_edges(node)
                 has_downstream = len(downstream_edges) > 0
 
-                op_result = func(op, has_downstream=has_downstream, **op_args)
+                node_args, node_kwargs = getcallargs_inverse(node.fit, **node_callargs)
+                node_result = func(node, *node_args, has_downstream=has_downstream, **node_kwargs)
 
-                if op_result is None:
+                if node_result is None:
                     continue
 
-                if not isinstance(op_result, dict):
+                if not isinstance(node_result, dict):
                     raise DaskPipesException(
                         "Invalid return. Expected {}, received {}".format(dict.__name__,
-                                                                          op_result.__class__.__name__))
+                                                                          node_result.__class__.__name__))
 
-                unused_output = set(op_result.keys())
+                unused_output = set(node_result.keys())
 
                 # Get downstream edges
                 for edge in downstream_edges:
-                    downstream_op: NodeBase = edge.downstream
+                    downstream_node: NodeBase = edge.downstream
                     edge: NodeConnection
-                    self._check_arguements(op, edge, node_arguments, downstream_op, op_result)
+                    self._check_arguements(node, edge, node_arguments, downstream_node, node_result)
                     if edge.upstream_slot in unused_output:
                         unused_output.remove(edge.upstream_slot)
 
                     # Populate arguments of downstream vertex
-                    node_arguments[downstream_op][edge.downstream_slot] = op_result[edge.upstream_slot]
+                    node_arguments[downstream_node][edge.downstream_slot] = node_result[edge.upstream_slot]
 
                 for upstream_slot in unused_output:
-                    outputs[(op, upstream_slot)] = op_result[upstream_slot]
+                    outputs[(node, upstream_slot)] = node_result[upstream_slot]
             except Exception as ex:
-                raise DaskPipesException("Error occurred during {}".format(op)) from ex
+                raise DaskPipesException("Error occurred during {}".format(node)) from ex
 
         return outputs
 
-    def _fit(self, op, **op_args):
+    def pre_fit(self, node, node_args, node_kwargs):
+        pass
+
+    def pre_transform(self, node, node_args, node_kwargs):
+        pass
+
+    def post_fit(self, node, node_args, node_kwargs):
+        pass
+
+    def post_transform(self, node, node_args, node_kwargs, result):
+        pass
+
+    def _fit(self, node, *node_args, **node_kwargs):
         """
         Helper function used for fit call and dumping params
-        :param op:
-        :param op_args:
+        :param node:
+        :param node_kwargs:
         :return:
         """
         # ----------------------
         # Fit node
         # ----------------------
         # Make copy of arguments
-        op_args = {k: v.copy() if v is not None else v for k, v in op_args.items()}
-        op.fit(**op_args)
+        node_args = deepcopy(node_args)
+        node_kwargs = deepcopy(node_kwargs)
+        self.pre_fit(node, node_args, node_kwargs)
+        node.fit(*node_args, **node_kwargs)
+        self.post_fit(node, node_args, node_kwargs)
 
-    def _transform(self, op, **op_args):
+    def _transform(self, node, *node_args, **node_kwargs):
         """
         Helper function, used for transform call and dumping outputs
-        :param op:
-        :param op_args:
+        :param node:
+        :param node_kwargs:
         :return:
         """
 
@@ -1003,11 +909,12 @@ class Pipeline(Graph):
         # Transform node
         # ----------------------
         # Make copy of arguments
-        op_args = {k: v.copy() if v is not None else v for k, v in op_args.items()}
-
-        op_result = Pipeline._parse_node_output(op, op.transform(**op_args))
-
-        return op_result
+        node_args = deepcopy(node_args)
+        node_kwargs = deepcopy(node_kwargs)
+        self.pre_transform(node, node_args, node_kwargs)
+        node_result = Pipeline._parse_node_output(node, node.transform(*node_args, **node_kwargs))
+        self.post_transform(node, node_args, node_kwargs, node_result)
+        return node_result
 
     def fit(self, *args, **kwargs):
         """
@@ -1018,10 +925,10 @@ class Pipeline(Graph):
         :return: self
         """
 
-        def func(op, has_downstream, **op_args):
-            self._fit(op, **op_args)
+        def func(node, *node_args, has_downstream=True, **node_kwargs):
+            self._fit(node, *node_args, **node_kwargs)
             if has_downstream:
-                rv = self._transform(op, **op_args)
+                rv = self._transform(node, *node_args, **node_kwargs)
                 return rv
 
         self._iterate_graph(func, *args, **kwargs)
@@ -1036,8 +943,8 @@ class Pipeline(Graph):
         Output of nodes that was not piped anywhere
         """
 
-        def func(op, has_downstream, **op_args):
-            return self._transform(op, **op_args)
+        def func(node, *node_args, has_downstream=True, **node_kwargs):
+            return self._transform(node, *node_args, **node_kwargs)
 
         outputs = self._iterate_graph(func, *args, **kwargs)
         rv = {'{}_{}'.format(k[0].name, k[1]): v for k, v in outputs.items()}

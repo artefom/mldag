@@ -36,7 +36,7 @@ def prepareNN():
         ('scale_one_hot', dask_ml.preprocessing.MinMaxScaler(feature_range=(-1, 1)), cs.Numeric & cs.Binary)
     ], remainder='passthrough'))
 
-    pipeline >> categorize >> convert_dates >> add_nullable_indicator >> \
-    add_na_cat >> fillna >> scale >> one_hot >> scale_one_hot
+    (pipeline >> categorize >> convert_dates >> add_nullable_indicator >>
+     add_na_cat >> fillna >> scale >> one_hot >> scale_one_hot)
 
     return pipeline
