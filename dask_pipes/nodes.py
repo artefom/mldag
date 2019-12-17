@@ -170,7 +170,7 @@ class RobustCategoriser(NodeBase):
                     X[col_name] = X[col_name].apply(
                         get_col_transformer(col_categories, self.replacement),
                         meta=(col_name, object))
-                cat_type = pd.api.types.CategoricalDtype(col_categories)
+                cat_type = pd.api.types.CategoricalDtype(sorted(col_categories), ordered=False)
                 X[col_name] = X[col_name].astype(cat_type)
             elif col_name in self.drop_columns_:
                 if self.drop:
@@ -194,7 +194,7 @@ class AddNaCategory(NodeBase):
             if pd.api.types.is_categorical(col):
                 old_cats = list(col.dtype.categories)
                 new_cats = [self.unknown_cat] + old_cats
-                self.categories_[col_name] = pd.CategoricalDtype(new_cats)
+                self.categories_[col_name] = pd.CategoricalDtype(sorted(new_cats), ordered=False)
         return self
 
     def transform(self, X, y=None):
