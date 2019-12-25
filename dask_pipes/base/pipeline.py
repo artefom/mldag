@@ -423,11 +423,12 @@ NodeCache = namedtuple('NodeCache', ['node_input', 'node_output'])
 
 class CacheMixin(PipelineMixin):
 
-    def __init__(self, cache_dir):
+    def __init__(self, cache_dir, recover_categories=True):
         self.cache: Dict[str, NodeCache] = dict()
         self.cache_dir = cache_dir
         self.dump_cache = dict()
         self.load_cache = dict()
+        self.recover_categories = recover_categories
 
     def _record_cache(self, node, node_input, node_output):
         dumper = dataframe_dumper_factory(
@@ -442,6 +443,22 @@ class CacheMixin(PipelineMixin):
             node_input=node_input,
             node_output=node_output
         )
+
+    def load(self, data):
+        loader = dataframe_loader_factory(
+            df_dump_cache=self.dump_cache,
+            df_load_cache=self.load_cache,
+        )
+        return yaml.load(data, Loader=loader)
+
+    def dump(self, data):
+        dumper = dataframe_dumper_factory(
+            self.cache_dir,
+            node_name='manual',
+            df_dump_cache=self.dump_cache,
+            df_load_cache=self.load_cache,
+        )
+        yaml.dump(data, Dumper=dumper)
 
     def _load_result(self, node, node_input):
         if node.name not in self.cache:

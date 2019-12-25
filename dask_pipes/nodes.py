@@ -193,10 +193,12 @@ class AddNaCategory(NodeBase):
         for col_name in X.columns:
             col = X[col_name]
             if pd.api.types.is_categorical(col):
+                if col.isna().sum() == 0:
+                    pass
                 if col.cat.known:
                     old_cats = list(col.dtype.categories)
                 else:
-                    old_cats = list(col.cat.as_known().dtype.categories)
+                    raise ValueError("Can only add null category to known categoricals")
                 new_cats = [self.unknown_cat] + old_cats
                 self.categories_[col_name] = pd.CategoricalDtype(sorted(new_cats), ordered=False)
         return self

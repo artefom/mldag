@@ -35,7 +35,9 @@ class DataFrameLoader(yaml.SafeLoader):
                  *args,
                  df_dump_cache=None,
                  df_load_cache=None,
+                 recover_categories=True,
                  **kwargs):
+        self.recover_categories = recover_categories
         if df_load_cache is None:
             self.df_load_cache = dict()
         else:
@@ -64,9 +66,16 @@ class DataFrameLoader(yaml.SafeLoader):
                                    "file modified. original ts: %s, but found: %s" % (mtime_orig, mtime),
                                    node.start_mark)
         rv = dd.read_parquet(path)
-        self.df_dump_cache[rv] = state
+        if self.recover_categories:
+            for col in rv.columns:
+                try:
+                    rv[col] = rv[col].cat.set_categories(rv[col].head(1).dtype.categories)
+                except AttributeError:
+                    pass
+
         self.df_load_cache[tuple(state.items())] = rv
-        return rv.copy()
+        self.df_dump_cache[rv] = state
+        return rv
 
     def construct_pandas_dataframe(self, node):
         state = self.construct_mapping(node)
@@ -174,11 +183,12 @@ DataFrameDumper.add_representer(dd.DataFrame, DataFrameDumper.represent_dd_dataf
 DataFrameDumper.add_representer(pd.DataFrame, DataFrameDumper.represent_pd_dataframe)
 
 
-def dataframe_loader_factory(df_dump_cache=None, df_load_cache=None):
+def dataframe_loader_factory(df_dump_cache=None, df_load_cache=None, recover_categories=True):
     def get_loader(*args, **kwargs):
         return DataFrameLoader(*args,
                                df_dump_cache=df_dump_cache,
                                df_load_cache=df_load_cache,
+                               recover_categories=recover_categories,
                                **kwargs)
 
     return get_loader
