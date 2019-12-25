@@ -1,3 +1,5 @@
+from typing import Any, Dict, Tuple
+from collections import namedtuple
 import yaml
 import pandas as pd
 import dask.dataframe as dd
@@ -8,16 +10,12 @@ from urllib.parse import urlparse, unquote
 import pathlib
 import socket
 from yaml.constructor import ConstructorError
-import base64
+from .base import PipelineMixin, NodeCallable, NodeBase
 
 __all__ = ['path_from_uri', 'path_to_uri',
            'dataframe_dumper_factory',
-           'dataframe_loader_factory']
-
-
-def label(a):
-    val = int(abs(a % 1099511627775))
-    return base64.b64encode(val.to_bytes(5, byteorder='big')).decode('ascii')
+           'dataframe_loader_factory',
+           'CacheMixin']
 
 
 def path_to_uri(path):
@@ -209,3 +207,92 @@ def dataframe_dumper_factory(directory, node_name=None, run_name=None, df_dump_c
                                **kwargs)
 
     return get_dumper
+
+
+NodeCache = namedtuple('NodeCache', ['node_input', 'node_output'])
+
+
+class CacheMixin(PipelineMixin):
+
+    def __init__(self, cache_dir, recover_categories=True):
+        self.cache: Dict[str, NodeCache] = dict()
+        self.cache_dir = cache_dir
+        self.dump_cache = dict()
+        self.load_cache = dict()
+        self.recover_categories = recover_categories
+
+    def _record_cache(self, node, node_input, node_output):
+        dumper = dataframe_dumper_factory(
+            self.cache_dir,
+            node_name=node.name,
+            df_dump_cache=self.dump_cache,
+            df_load_cache=self.load_cache,
+        )
+        node_input = yaml.dump(node_input, Dumper=dumper)
+        node_output = yaml.dump(node_output, Dumper=dumper)
+        self.cache[node.name] = NodeCache(
+            node_input=node_input,
+            node_output=node_output
+        )
+
+    def load(self, data):
+        loader = dataframe_loader_factory(
+            df_dump_cache=self.dump_cache,
+            df_load_cache=self.load_cache,
+        )
+        return yaml.load(data, Loader=loader)
+
+    def dump(self, data):
+        dumper = dataframe_dumper_factory(
+            self.cache_dir,
+            node_name='manual',
+            df_dump_cache=self.dump_cache,
+            df_load_cache=self.load_cache,
+        )
+        yaml.dump(data, Dumper=dumper)
+
+    def _load_result(self, node, node_input):
+        if node.name not in self.cache:
+            return None
+        node_cache = self.cache[node.name]
+        loader = dataframe_loader_factory(
+            df_dump_cache=self.dump_cache,
+            df_load_cache=self.load_cache,
+        )
+        dumper = dataframe_dumper_factory(
+            self.cache_dir,
+            node_name=node.name,
+            df_dump_cache=self.dump_cache,
+            df_load_cache=self.load_cache,
+        )
+        orig_input = yaml.dump(node_input, Dumper=dumper)
+        if node_cache.node_input == orig_input:
+            return yaml.load(node_cache.node_output, Loader=loader)
+        return None
+
+    def fit(self,
+            func: NodeCallable,
+            node: NodeBase,
+            node_input: Tuple[Tuple[Any], Dict[str, Any]],
+            has_downstream=True):
+        node_output = self._load_result(node, node_input)
+        if node_output is None:
+            node_output = func(node, node_input, has_downstream=has_downstream)
+            if has_downstream:
+                self._record_cache(node, node_input, node_output)
+                node_output = self._load_result(node, node_input)
+                assert node_output is not None
+        return node_output
+
+    def transform(self,
+                  func: NodeCallable,
+                  node: NodeBase,
+                  node_input: Tuple[Tuple[Any], Dict[str, Any]],
+                  has_downstream=True):
+        node_output = self._load_result(node, node_input)
+        if node_output is None:
+            node_output = func(node, node_input, has_downstream=has_downstream)
+            self._record_cache(node, node_input, node_output)
+            node_output = self._load_result(node, node_input)
+            assert node_output is not None
+        return node_output

@@ -3,7 +3,6 @@ from dask_pipes.exceptions import DaskPipesException
 from dask_pipes.utils import replace_signature
 import pandas as pd
 import dask.dataframe as dd
-import dask.array as da
 import numpy as np
 import pandas.api.types
 from types import MethodType
@@ -45,6 +44,7 @@ class NodeWrapper(NodeBase):
                                           doc=estimator.transform.__doc__)
             self.__doc__ = estimator.__doc__
         else:
+            # noinspection PyTypeChecker
             self.__doc__ = self.__class__.__doc__
             self._reset_transform_signature()
             self._reset_fit_signature()

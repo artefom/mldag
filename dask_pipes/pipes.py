@@ -1,9 +1,9 @@
-from .base.pipeline import Pipeline
+from dask_pipes import Pipeline
+from dask_pipes import column_selection as cs
 from .nodes import AddNaIndicator, RobustCategoriser, DateProcessor, as_node, AddNaCategory
 import dask_ml.preprocessing
 import dask_ml.compose
 import dask_ml.impute
-from . import column_selection as cs
 
 __all__ = ['prepareNN']
 

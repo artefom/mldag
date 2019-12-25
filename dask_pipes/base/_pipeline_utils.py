@@ -7,7 +7,7 @@ from ..utils import replace_signature
 __all__ = ['PipelineInput', 'PipelineOutput', 'get_input_signature',
            'set_fit_signature', 'set_transform_signature',
            'reset_fit_signature', 'reset_transform_signature',
-           'getcallargs_inverse']
+           'getcallargs_inverse', 'validate_fit_transform']
 
 ARG_ORDER = [
     'pos_only_no_default',
