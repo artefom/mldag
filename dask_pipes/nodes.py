@@ -3,6 +3,7 @@ from dask_pipes.exceptions import DaskPipesException
 from dask_pipes.utils import replace_signature
 import pandas as pd
 import dask.dataframe as dd
+import dask.array as da
 import numpy as np
 import pandas.api.types
 from types import MethodType
@@ -171,7 +172,7 @@ class RobustCategoriser(NodeBase):
                         get_col_transformer(col_categories, self.replacement),
                         meta=(col_name, object))
                 cat_type = pd.api.types.CategoricalDtype(sorted(col_categories), ordered=False)
-                X[col_name] = X[col_name].astype(cat_type)
+                X[col_name] = X[col_name].astype(cat_type).cat.as_unknown()
             elif col_name in self.drop_columns_:
                 if self.drop:
                     X.drop(col_name, axis=1)
@@ -192,7 +193,10 @@ class AddNaCategory(NodeBase):
         for col_name in X.columns:
             col = X[col_name]
             if pd.api.types.is_categorical(col):
-                old_cats = list(col.dtype.categories)
+                if col.cat.known:
+                    old_cats = list(col.dtype.categories)
+                else:
+                    old_cats = list(col.cat.as_known().dtype.categories)
                 new_cats = [self.unknown_cat] + old_cats
                 self.categories_[col_name] = pd.CategoricalDtype(sorted(new_cats), ordered=False)
         return self

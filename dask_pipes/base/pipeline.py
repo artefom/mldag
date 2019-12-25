@@ -1,7 +1,9 @@
 from .graph import Graph, VertexBase, EdgeBase, VertexWidthFirst
 from ..exceptions import DaskPipesException
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+from collections import namedtuple
 from sklearn.base import BaseEstimator, TransformerMixin
+from .cache import dataframe_loader_factory, dataframe_dumper_factory
 import inspect
 from ..utils import (get_arguments_description,
                      get_return_description,
@@ -17,8 +19,10 @@ from ._pipeline_utils import (PipelineInput,
                               getcallargs_inverse,
                               validate_fit_transform)
 from copy import deepcopy
+import yaml
+from yaml.constructor import ConstructorError
 
-__all__ = ['NodeConnection', 'NodeBase', 'Pipeline', 'NodeBaseMeta', 'DummyNode']
+__all__ = ['NodeConnection', 'NodeBase', 'Pipeline', 'NodeBaseMeta', 'DummyNode', 'CacheMixin']
 
 
 class NodeSlot:
@@ -380,26 +384,110 @@ class PipelineMeta(type):
         return super().__new__(mcs, name, bases, attrs)
 
 
+class NodeCallable:
+    def __call__(self, node: NodeBase, node_input: Tuple[Tuple[Any], Dict[str, Any]],
+                 has_downstream: bool = True) -> Any: ...
+
+
 class PipelineMixin:
 
-    def __init__(self):
-        pass
+    def fit(self,
+            func: NodeCallable,
+            node: NodeBase,
+            node_input: Tuple[Tuple[Any], Dict[str, Any]],
+            has_downstream=True):
+        return func(node, node_input, has_downstream=has_downstream)
+
+    def transform(self,
+                  func: NodeCallable,
+                  node: NodeBase,
+                  node_input: Tuple[Tuple[Any], Dict[str, Any]],
+                  has_downstream=True):
+        return func(node, node_input, has_downstream=has_downstream)
 
     def wrap_fit(self, fit):
-        print("Wrapped fit")
-
-        def func(node, node_args, node_kwargs, has_downstream=True):
-            return fit(node, node_args, node_kwargs, has_downstream=has_downstream)
+        def func(node, node_input, has_downstream=True):
+            return self.fit(fit, node, node_input, has_downstream=has_downstream)
 
         return func
 
     def wrap_transform(self, transform):
-        print("Wrapped transform")
-
-        def func(node, node_args, node_kwargs, has_downstream=True):
-            return transform(node, node_args, node_kwargs, has_downstream=has_downstream)
+        def func(node, node_input, has_downstream=True):
+            return self.transform(transform, node, node_input, has_downstream=has_downstream)
 
         return func
+
+
+NodeCache = namedtuple('NodeCache', ['node_input', 'node_output'])
+
+
+class CacheMixin(PipelineMixin):
+
+    def __init__(self, cache_dir):
+        self.cache: Dict[str, NodeCache] = dict()
+        self.cache_dir = cache_dir
+        self.dump_cache = dict()
+        self.load_cache = dict()
+
+    def _record_cache(self, node, node_input, node_output):
+        dumper = dataframe_dumper_factory(
+            self.cache_dir,
+            node_name=node.name,
+            df_dump_cache=self.dump_cache,
+            df_load_cache=self.load_cache,
+        )
+        node_input = yaml.dump(node_input, Dumper=dumper)
+        node_output = yaml.dump(node_output, Dumper=dumper)
+        self.cache[node.name] = NodeCache(
+            node_input=node_input,
+            node_output=node_output
+        )
+
+    def _load_result(self, node, node_input):
+        if node.name not in self.cache:
+            return None
+        node_cache = self.cache[node.name]
+        loader = dataframe_loader_factory(
+            df_dump_cache=self.dump_cache,
+            df_load_cache=self.load_cache,
+        )
+        dumper = dataframe_dumper_factory(
+            self.cache_dir,
+            node_name=node.name,
+            df_dump_cache=self.dump_cache,
+            df_load_cache=self.load_cache,
+        )
+        orig_input = yaml.dump(node_input, Dumper=dumper)
+        if node_cache.node_input == orig_input:
+            return yaml.load(node_cache.node_output, Loader=loader)
+        return None
+
+    def fit(self,
+            func: NodeCallable,
+            node: NodeBase,
+            node_input: Tuple[Tuple[Any], Dict[str, Any]],
+            has_downstream=True):
+        node_output = self._load_result(node, node_input)
+        if node_output is None:
+            node_output = func(node, node_input, has_downstream=has_downstream)
+            if has_downstream:
+                self._record_cache(node, node_input, node_output)
+                node_output = self._load_result(node, node_input)
+                assert node_output is not None
+        return node_output
+
+    def transform(self,
+                  func: NodeCallable,
+                  node: NodeBase,
+                  node_input: Tuple[Tuple[Any], Dict[str, Any]],
+                  has_downstream=True):
+        node_output = self._load_result(node, node_input)
+        if node_output is None:
+            node_output = func(node, node_input, has_downstream=has_downstream)
+            self._record_cache(node, node_input, node_output)
+            node_output = self._load_result(node, node_input)
+            assert node_output is not None
+        return node_output
 
 
 class Pipeline(Graph, metaclass=PipelineMeta):
@@ -429,8 +517,6 @@ class Pipeline(Graph, metaclass=PipelineMeta):
             self.mixins = list()
         else:
             self.mixins = mixins
-
-        self.mixins = [PipelineMixin()]
 
     @staticmethod
     def _get_default_node_name(node, counter=None):
@@ -861,8 +947,8 @@ class Pipeline(Graph, metaclass=PipelineMeta):
                 downstream_edges = self.get_downstream_edges(node)
                 has_downstream = len(downstream_edges) > 0
 
-                node_args, node_kwargs = getcallargs_inverse(node.fit, **node_callargs)
-                node_result = func(node, node_args, node_kwargs, has_downstream=has_downstream)
+                node_input = getcallargs_inverse(node.fit, **node_callargs)
+                node_result = func(node, node_input, has_downstream=has_downstream)
 
                 if node_result is None:
                     continue
@@ -938,38 +1024,37 @@ class Pipeline(Graph, metaclass=PipelineMeta):
 
         return outputs
 
-    def pre_fit(self, node, node_args, node_kwargs):
+    def pre_fit(self, node, node_input):
         pass
 
-    def pre_transform(self, node, node_args, node_kwargs):
+    def pre_transform(self, node, node_input):
         pass
 
-    def post_fit(self, node, node_args, node_kwargs):
+    def post_fit(self, node, node_input):
         pass
 
-    def post_transform(self, node, node_args, node_kwargs, result):
+    def post_transform(self, node, node_input, node_output):
         pass
 
-    def _fit(self, node: NodeBase, *node_args, **node_kwargs):
+    def _fit(self, node: NodeBase, node_input):
         """
         Helper function used for fit call and dumping params
         :param node:
-        :param node_kwargs:
+        :param node_input:
         :return:
         """
         # ----------------------
         # Fit node
         # ----------------------
         # Make copy of arguments
-        node_args = deepcopy(node_args)
-        node_kwargs = deepcopy(node_kwargs)
-        node.fit(*node_args, **node_kwargs)
+        node_input = deepcopy(node_input)
+        node.fit(*node_input[0], **node_input[1])
 
-    def _transform(self, node: NodeBase, *node_args, **node_kwargs):
+    def _transform(self, node: NodeBase, node_input):
         """
         Helper function, used for transform call and dumping outputs
         :param node:
-        :param node_kwargs:
+        :param node_input:
         :return:
         """
 
@@ -977,9 +1062,8 @@ class Pipeline(Graph, metaclass=PipelineMeta):
         # Transform node
         # ----------------------
         # Make copy of arguments
-        node_args = deepcopy(node_args)
-        node_kwargs = deepcopy(node_kwargs)
-        node_result = Pipeline._parse_node_output(node, node.transform(*node_args, **node_kwargs))
+        node_input = deepcopy(node_input)
+        node_result = Pipeline._parse_node_output(node, node.transform(*node_input[0], **node_input[1]))
         return node_result
 
     def fit(self, *args, **kwargs):
@@ -991,11 +1075,16 @@ class Pipeline(Graph, metaclass=PipelineMeta):
         :return: self
         """
 
-        def func(node, node_args, node_kwargs, has_downstream=True):
-            self._fit(node, *node_args, **node_kwargs)
+        def func(node, node_input, has_downstream=True):
+            self._fit(node, node_input)
             if has_downstream:
-                rv = self._transform(node, *node_args, **node_kwargs)
+                rv = self._transform(node, node_input)
                 return rv
+
+        for mixin in self.mixins:
+            func = mixin.wrap_fit(func)
+
+        func.__name__ = 'fit'
 
         self._iterate_graph(func, *args, **kwargs)
         return self
@@ -1009,8 +1098,13 @@ class Pipeline(Graph, metaclass=PipelineMeta):
         Output of nodes that was not piped anywhere
         """
 
-        def func(node, node_args, node_kwargs, has_downstream=True):
-            return self._transform(node, *node_args, **node_kwargs)
+        def func(node, node_input, has_downstream=True):
+            return self._transform(node, node_input)
+
+        for mixin in self.mixins:
+            func = mixin.wrap_transform(func)
+
+        func.__name__ = 'transform'
 
         outputs = self._iterate_graph(func, *args, **kwargs)
         rv = {'{}_{}'.format(k[0].name, k[1]): v for k, v in outputs.items()}
