@@ -380,6 +380,28 @@ class PipelineMeta(type):
         return super().__new__(mcs, name, bases, attrs)
 
 
+class PipelineMixin:
+
+    def __init__(self):
+        pass
+
+    def wrap_fit(self, fit):
+        print("Wrapped fit")
+
+        def func(node, node_args, node_kwargs, has_downstream=True):
+            return fit(node, node_args, node_kwargs, has_downstream=has_downstream)
+
+        return func
+
+    def wrap_transform(self, transform):
+        print("Wrapped transform")
+
+        def func(node, node_args, node_kwargs, has_downstream=True):
+            return transform(node, node_args, node_kwargs, has_downstream=has_downstream)
+
+        return func
+
+
 class Pipeline(Graph, metaclass=PipelineMeta):
     """
     Pipeline is a graph structure, containing relationships between NodeBase (vertices)
@@ -390,7 +412,7 @@ class Pipeline(Graph, metaclass=PipelineMeta):
     piping outputs of upstream nodes to inputs of downstream nodes
     """
 
-    def __init__(self):
+    def __init__(self, mixins=None):
         super().__init__()
 
         # Pipeline inputs. use set_input to add input
@@ -402,6 +424,13 @@ class Pipeline(Graph, metaclass=PipelineMeta):
         self.node_name_counter = 0
 
         self._params_downstream = None
+
+        if mixins is None:
+            self.mixins = list()
+        else:
+            self.mixins = mixins
+
+        self.mixins = [PipelineMixin()]
 
     @staticmethod
     def _get_default_node_name(node, counter=None):
@@ -833,7 +862,7 @@ class Pipeline(Graph, metaclass=PipelineMeta):
                 has_downstream = len(downstream_edges) > 0
 
                 node_args, node_kwargs = getcallargs_inverse(node.fit, **node_callargs)
-                node_result = func(node, *node_args, has_downstream=has_downstream, **node_kwargs)
+                node_result = func(node, node_args, node_kwargs, has_downstream=has_downstream)
 
                 if node_result is None:
                     continue
@@ -921,7 +950,7 @@ class Pipeline(Graph, metaclass=PipelineMeta):
     def post_transform(self, node, node_args, node_kwargs, result):
         pass
 
-    def _fit(self, node, *node_args, **node_kwargs):
+    def _fit(self, node: NodeBase, *node_args, **node_kwargs):
         """
         Helper function used for fit call and dumping params
         :param node:
@@ -934,11 +963,9 @@ class Pipeline(Graph, metaclass=PipelineMeta):
         # Make copy of arguments
         node_args = deepcopy(node_args)
         node_kwargs = deepcopy(node_kwargs)
-        self.pre_fit(node, node_args, node_kwargs)
         node.fit(*node_args, **node_kwargs)
-        self.post_fit(node, node_args, node_kwargs)
 
-    def _transform(self, node, *node_args, **node_kwargs):
+    def _transform(self, node: NodeBase, *node_args, **node_kwargs):
         """
         Helper function, used for transform call and dumping outputs
         :param node:
@@ -952,9 +979,7 @@ class Pipeline(Graph, metaclass=PipelineMeta):
         # Make copy of arguments
         node_args = deepcopy(node_args)
         node_kwargs = deepcopy(node_kwargs)
-        self.pre_transform(node, node_args, node_kwargs)
         node_result = Pipeline._parse_node_output(node, node.transform(*node_args, **node_kwargs))
-        self.post_transform(node, node_args, node_kwargs, node_result)
         return node_result
 
     def fit(self, *args, **kwargs):
@@ -966,7 +991,7 @@ class Pipeline(Graph, metaclass=PipelineMeta):
         :return: self
         """
 
-        def func(node, *node_args, has_downstream=True, **node_kwargs):
+        def func(node, node_args, node_kwargs, has_downstream=True):
             self._fit(node, *node_args, **node_kwargs)
             if has_downstream:
                 rv = self._transform(node, *node_args, **node_kwargs)
@@ -984,7 +1009,7 @@ class Pipeline(Graph, metaclass=PipelineMeta):
         Output of nodes that was not piped anywhere
         """
 
-        def func(node, *node_args, has_downstream=True, **node_kwargs):
+        def func(node, node_args, node_kwargs, has_downstream=True):
             return self._transform(node, *node_args, **node_kwargs)
 
         outputs = self._iterate_graph(func, *args, **kwargs)
