@@ -49,13 +49,13 @@ ds_name = 'test_ds'
 
 
 def test_edges_3():
-    f1 = dp.Graph()
-    v1 = dp.VertexBase()
-    v2 = dp.VertexBase()
+    f1 = dp.base.Graph()
+    v1 = dp.base.VertexBase()
+    v2 = dp.base.VertexBase()
     v1.graph = f1
     v2.graph = f1
 
-    e = dp.EdgeBase(v1, v2)
+    e = dp.base.EdgeBase(v1, v2)
     assert len(f1.edges) == 0
 
     f1.add_edge(e)
@@ -64,24 +64,24 @@ def test_edges_3():
 
 
 def test_edges_negative_2():
-    f1 = dp.Graph()
-    v1 = dp.VertexBase()
+    f1 = dp.base.Graph()
+    v1 = dp.base.VertexBase()
     v1.graph = f1
-    v2 = dp.VertexBase()
+    v2 = dp.base.VertexBase()
 
-    f2 = dp.Graph()
-    v3 = dp.VertexBase()
+    f2 = dp.base.Graph()
+    v3 = dp.base.VertexBase()
     v3.graph = f2
-    v4 = dp.VertexBase()
+    v4 = dp.base.VertexBase()
 
-    e0 = dp.EdgeBase()
+    e0 = dp.base.EdgeBase()
     with pytest.raises(DaskPipesException):
         f1.add_edge(e0)
 
     with pytest.raises(DaskPipesException):
         e0.graph = f1
 
-    e1 = dp.EdgeBase(v1, v4, graph=f1)
+    e1 = dp.base.EdgeBase(v1, v4, graph=f1)
 
     with pytest.raises(DaskPipesException):
         f2.add_edge(e1)
@@ -95,20 +95,20 @@ def test_edges_negative_2():
 
 
 def test_edges_negative():
-    f1 = dp.Graph()
-    v1 = dp.VertexBase()
+    f1 = dp.base.Graph()
+    v1 = dp.base.VertexBase()
     v1.graph = f1
-    v2 = dp.VertexBase()
+    v2 = dp.base.VertexBase()
 
-    f2 = dp.Graph()
-    v3 = dp.VertexBase()
+    f2 = dp.base.Graph()
+    v3 = dp.base.VertexBase()
     f2.add_vertex(v3)
-    v4 = dp.VertexBase()
+    v4 = dp.base.VertexBase()
 
     with pytest.raises(DaskPipesException):
-        e1 = dp.EdgeBase(v1, v3)
+        e1 = dp.base.EdgeBase(v1, v3)
 
-    e2 = dp.EdgeBase(v2, v4)
+    e2 = dp.base.EdgeBase(v2, v4)
     v2.graph = f1
     v4.graph = f2
 
@@ -117,17 +117,17 @@ def test_edges_negative():
 
 
 def test_edges():
-    g = dp.Graph()
-    v1 = dp.VertexBase()
+    g = dp.base.Graph()
+    v1 = dp.base.VertexBase()
     g.add_vertex(v1)
-    v2 = dp.VertexBase()
-    v3 = dp.VertexBase()
-    v4 = dp.VertexBase()
-    v5 = dp.VertexBase()
-    v6 = dp.VertexBase()
+    v2 = dp.base.VertexBase()
+    v3 = dp.base.VertexBase()
+    v4 = dp.base.VertexBase()
+    v5 = dp.base.VertexBase()
+    v6 = dp.base.VertexBase()
 
-    edge1 = dp.EdgeBase(v1, v2)
-    edge2 = dp.EdgeBase(v3, v4)
+    edge1 = dp.base.EdgeBase(v1, v2)
+    edge2 = dp.base.EdgeBase(v3, v4)
 
     assert edge2._graph is None
     assert edge2._v1 == v3
@@ -135,7 +135,7 @@ def test_edges():
     assert edge2._v1._graph is None
     assert edge2._v2._graph is None
 
-    edge3 = dp.EdgeBase(v2, v3)
+    edge3 = dp.base.EdgeBase(v2, v3)
     assert edge3._v1 == v2
     assert edge3._v2 == v3
     assert edge3._v1._graph is None
@@ -154,14 +154,14 @@ def test_edges():
     assert g.get_edge(v1, v2) == edge1
     assert g.edges == [g.get_edge(v1, v2), g.get_edge(v3, v4)]
 
-    edge4 = dp.EdgeBase(v5, v6, g)
+    edge4 = dp.base.EdgeBase(v5, v6, g)
     assert g.get_edge(v5, v6) == edge4
     assert g.edges == [g.get_edge(v1, v2), g.get_edge(v3, v4), g.get_edge(v5, v6)]
 
     with pytest.raises(DaskPipesException):
-        dp.EdgeBase(graph=g)
+        dp.base.EdgeBase(graph=g)
 
-    g2 = dp.Graph()
+    g2 = dp.base.Graph()
 
     edge4.graph = g
     assert edge4._graph == g
@@ -170,15 +170,15 @@ def test_edges():
 
 
 def test_root_leaf():
-    g = dp.Graph()
-    v1_0 = dp.VertexBase()
-    v1_1 = dp.VertexBase()
-    v1_2 = dp.VertexBase()
-    v2 = dp.VertexBase()
-    v3 = dp.VertexBase()
-    v4_0 = dp.VertexBase()
-    v4_1 = dp.VertexBase()
-    v4_2 = dp.VertexBase()
+    g = dp.base.Graph()
+    v1_0 = dp.base.VertexBase()
+    v1_1 = dp.base.VertexBase()
+    v1_2 = dp.base.VertexBase()
+    v2 = dp.base.VertexBase()
+    v3 = dp.base.VertexBase()
+    v4_0 = dp.base.VertexBase()
+    v4_1 = dp.base.VertexBase()
+    v4_2 = dp.base.VertexBase()
 
     v1_0.graph = g
     v4_2.graph = g
@@ -195,11 +195,11 @@ def test_root_leaf():
 
 
 def test_vertex_iter():
-    g = dp.Graph()
-    v1 = dp.VertexBase()
-    v2 = dp.VertexBase()
-    v3 = dp.VertexBase()
-    v4 = dp.VertexBase()
+    g = dp.base.Graph()
+    v1 = dp.base.VertexBase()
+    v2 = dp.base.VertexBase()
+    v3 = dp.base.VertexBase()
+    v4 = dp.base.VertexBase()
 
     v1.graph = g
     v1.set_downstream(v2)
@@ -210,20 +210,20 @@ def test_vertex_iter():
     assert g.get_root_vertices() == [v1]
     assert g.get_leaf_vertices() == [v4]
 
-    assert list(dp.VertexWidthFirst(g)) == [v1, v2, v3, v4]
+    assert list(dp.base.VertexWidthFirst(g)) == [v1, v2, v3, v4]
 
     v1.set_upstream(v4)
     with pytest.raises(DaskPipesException):
-        list(dp.VertexWidthFirst(g))
+        list(dp.base.VertexWidthFirst(g))
 
 
 def test_graph_1():
-    g = dp.Graph()
-    v1 = dp.VertexBase()
+    g = dp.base.Graph()
+    v1 = dp.base.VertexBase()
     g.add_vertex(v1)
-    v2 = dp.VertexBase()
-    v3 = dp.VertexBase()
-    v4 = dp.VertexBase()
+    v2 = dp.base.VertexBase()
+    v3 = dp.base.VertexBase()
+    v4 = dp.base.VertexBase()
 
     assert g.edges == []
     assert g.vertices == [v1]
@@ -262,7 +262,7 @@ def test_graph_1():
     assert g.vertices == [v1, v4, v2, v3]
 
     # Connect 3
-    g.add_edge(dp.EdgeBase(v3, v4))
+    g.add_edge(dp.base.EdgeBase(v3, v4))
     g.get_edge(v3, v4)
     with pytest.raises(DaskPipesException):
         g.get_edge(v4, v3)
@@ -322,10 +322,10 @@ def test_graph_1():
 
 
 def test_graph_2():
-    pipeline1 = dp.Graph()
-    pipeline2 = dp.Graph()
-    op1 = dp.VertexBase()
-    op2 = dp.VertexBase()
+    pipeline1 = dp.base.Graph()
+    pipeline2 = dp.base.Graph()
+    op1 = dp.base.VertexBase()
+    op2 = dp.base.VertexBase()
 
     with pytest.raises(DaskPipesException):
         op1.set_downstream(op2)
