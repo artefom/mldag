@@ -1,4 +1,4 @@
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, List
 from collections import namedtuple
 import yaml
 import pandas as pd
@@ -11,6 +11,7 @@ import pathlib
 import socket
 from yaml.constructor import ConstructorError
 from .base import PipelineMixin, NodeCallable, NodeBase
+from ..exceptions import DaskPipesException
 
 __all__ = ['path_from_uri', 'path_to_uri',
            'dataframe_dumper_factory',
@@ -209,90 +210,126 @@ def dataframe_dumper_factory(directory, node_name=None, run_name=None, df_dump_c
     return get_dumper
 
 
-NodeCache = namedtuple('NodeCache', ['node_input', 'node_output'])
+NodeCache = namedtuple('NodeCache', ['id', 'node_name', 'time', 'node_input', 'node_output'])
 
 
 class CacheMixin(PipelineMixin):
 
     def __init__(self, cache_dir, recover_categories=True):
-        self.cache: Dict[str, NodeCache] = dict()
-        self.cache_dir = cache_dir
-        self.dump_cache = dict()
-        self.load_cache = dict()
+        self.cache_dir = os.path.abspath(cache_dir)
         self.recover_categories = recover_categories
 
-    def _record_cache(self, node, node_input, node_output):
+        self._id_counter = 0
+        self._cache: List[NodeCache] = list()
+        self._latest_cache_by_input = dict()
+        self._df_dump_cache = dict()
+        self._df_load_cache = dict()
+
+    def __str__(self):
+        return "<CacheMixin {}>".format('./' + os.path.relpath(self.cache_dir, '.'))
+
+    def __repr__(self):
+        return str(self)
+
+    @property
+    def cache(self):
+        return pd.DataFrame(self._cache).set_index('id')
+
+    def add_record(self, node_name, node_input, node_output, time=None):
         dumper = dataframe_dumper_factory(
             self.cache_dir,
-            node_name=node.name,
-            df_dump_cache=self.dump_cache,
-            df_load_cache=self.load_cache,
+            node_name=node_name,
+            df_dump_cache=self._df_dump_cache,
+            df_load_cache=self._df_load_cache,
         )
         node_input = yaml.dump(node_input, Dumper=dumper)
         node_output = yaml.dump(node_output, Dumper=dumper)
-        self.cache[node.name] = NodeCache(
+
+        if time is None:
+            time = datetime.now()
+
+        rec = NodeCache(
+            id=self._id_counter,
+            node_name=node_name,
+            time=time,
             node_input=node_input,
             node_output=node_output
         )
+        self._id_counter += 1
 
-    def load(self, data):
-        loader = dataframe_loader_factory(
-            df_dump_cache=self.dump_cache,
-            df_load_cache=self.load_cache,
-        )
-        return yaml.load(data, Loader=loader)
+        # Make cache records
+        self._cache.append(rec)
+        self._latest_cache_by_input[(node_name, node_input)] = rec
 
-    def dump(self, data):
+    # def load(self, data):
+    #     loader = dataframe_loader_factory(
+    #         df_dump_cache=self.dump_cache,
+    #         df_load_cache=self.load_cache,
+    #     )
+    #     return yaml.load(data, Loader=loader)
+    #
+    # def dump(self, data):
+    #     dumper = dataframe_dumper_factory(
+    #         self.cache_dir,
+    #         node_name='manual',
+    #         df_dump_cache=self.dump_cache,
+    #         df_load_cache=self.load_cache,
+    #     )
+    #     yaml.dump(data, Dumper=dumper)
+
+    def get_latest_output(self, node_name, node_input=None):
+        if node_input is None:
+            matches = sorted(filter(lambda x: x.node_name == node_name, self._cache), key=lambda x: x.time)
+            if len(matches) == 0:
+                raise DaskPipesException("Cache for node {} does not exist".format(node_name))
+            loader = dataframe_loader_factory(
+                df_dump_cache=self._df_dump_cache,
+                df_load_cache=self._df_load_cache,
+            )
+            return yaml.load(matches[-1].node_output, Loader=loader)
         dumper = dataframe_dumper_factory(
             self.cache_dir,
-            node_name='manual',
-            df_dump_cache=self.dump_cache,
-            df_load_cache=self.load_cache,
-        )
-        yaml.dump(data, Dumper=dumper)
-
-    def _load_result(self, node, node_input):
-        if node.name not in self.cache:
-            return None
-        node_cache = self.cache[node.name]
-        loader = dataframe_loader_factory(
-            df_dump_cache=self.dump_cache,
-            df_load_cache=self.load_cache,
-        )
-        dumper = dataframe_dumper_factory(
-            self.cache_dir,
-            node_name=node.name,
-            df_dump_cache=self.dump_cache,
-            df_load_cache=self.load_cache,
+            node_name=node_name,
+            df_dump_cache=self._df_dump_cache,
+            df_load_cache=self._df_load_cache,
         )
         orig_input = yaml.dump(node_input, Dumper=dumper)
-        if node_cache.node_input == orig_input:
+        if (node_name, orig_input) in self._latest_cache_by_input:
+            node_cache = self._latest_cache_by_input[(node_name, orig_input)]
+            loader = dataframe_loader_factory(
+                df_dump_cache=self._df_dump_cache,
+                df_load_cache=self._df_load_cache,
+            )
             return yaml.load(node_cache.node_output, Loader=loader)
-        return None
+        else:
+            raise DaskPipesException("Cache for node %s and specific input does not exist" % node_name)
 
-    def fit(self,
-            func: NodeCallable,
-            node: NodeBase,
-            node_input: Tuple[Tuple[Any], Dict[str, Any]],
-            has_downstream=True):
-        node_output = self._load_result(node, node_input)
-        if node_output is None:
+    def _fit(self,
+             func: NodeCallable,
+             node: NodeBase,
+             node_input: Tuple[Tuple[Any], Dict[str, Any]],
+             has_downstream=True):
+        try:
+            node_output = self.get_latest_output(node.name, node_input)
+        except DaskPipesException:
             node_output = func(node, node_input, has_downstream=has_downstream)
             if has_downstream:
-                self._record_cache(node, node_input, node_output)
-                node_output = self._load_result(node, node_input)
-                assert node_output is not None
+                self.add_record(node.name, node_input, node_output)
+                node_output = self.get_latest_output(node.name, node_input)
         return node_output
 
-    def transform(self,
-                  func: NodeCallable,
-                  node: NodeBase,
-                  node_input: Tuple[Tuple[Any], Dict[str, Any]],
-                  has_downstream=True):
-        node_output = self._load_result(node, node_input)
-        if node_output is None:
+    def _transform(self,
+                   func: NodeCallable,
+                   node: NodeBase,
+                   node_input: Tuple[Tuple[Any], Dict[str, Any]],
+                   has_downstream=True):
+        try:
+            node_output = self.get_latest_output(node.name, node_input)
+        except DaskPipesException:
             node_output = func(node, node_input, has_downstream=has_downstream)
-            self._record_cache(node, node_input, node_output)
-            node_output = self._load_result(node, node_input)
-            assert node_output is not None
+            self.add_record(node.name, node_input, node_output)
+            node_output = self.get_latest_output(node.name, node_input)
         return node_output
+
+    def reset(self):
+        pass

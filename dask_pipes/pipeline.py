@@ -10,6 +10,10 @@ from copy import deepcopy
 __all__ = ['Pipeline']
 
 
+class _Empty:
+    pass
+
+
 class Pipeline(PipelineBase):
     """
     Pipeline is a graph structure, containing relationships between NodeBase (vertices)
@@ -152,8 +156,10 @@ class Pipeline(PipelineBase):
                 node_input = getcallargs_inverse(node.fit, **node_callargs)
                 node_result = func(node, node_input, has_downstream=has_downstream)
 
-                if node_result is None:
+                if node_result is _Empty:
                     continue
+                else:
+                    node_result = Pipeline._parse_node_output(node, node_result)
 
                 if not isinstance(node_result, dict):
                     raise DaskPipesException(
@@ -255,7 +261,8 @@ class Pipeline(PipelineBase):
         # ----------------------
         # Make copy of arguments
         node_input = deepcopy(node_input)
-        node_result = Pipeline._parse_node_output(node, node.transform(*node_input[0], **node_input[1]))
+
+        node_result = node.transform(*node_input[0], **node_input[1])
         return node_result
 
     def fit(self, *args, **kwargs):
@@ -272,9 +279,10 @@ class Pipeline(PipelineBase):
             if has_downstream:
                 rv = self._transform(node, node_input)
                 return rv
+            return _Empty
 
         for mixin in self.mixins:
-            func = mixin.wrap_fit(func)
+            func = mixin._wrap_fit(func)
 
         func.__name__ = 'fit'
 
@@ -294,7 +302,7 @@ class Pipeline(PipelineBase):
             return self._transform(node, node_input)
 
         for mixin in self.mixins:
-            func = mixin.wrap_transform(func)
+            func = mixin._wrap_transform(func)
 
         func.__name__ = 'transform'
 
