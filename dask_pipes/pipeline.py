@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 import inspect
 from dask_pipes.utils import ReturnDescription
 from dask_pipes.base import PipelineBase, NodeBase, NodeConnection, getcallargs_inverse
+from uuid import uuid4
 
 from copy import deepcopy
 
@@ -286,7 +287,17 @@ class Pipeline(PipelineBase):
 
         func.__name__ = 'fit'
 
-        self._iterate_graph(func, *args, **kwargs)
+        # Initialize run id
+        run_id = str(uuid4())
+
+        for mixin in self.mixins:
+            mixin._start_run(run_id)
+
+        try:
+            self._iterate_graph(func, *args, **kwargs)
+        finally:
+            for mixin in self.mixins:
+                mixin._end_run()
         return self
 
     def transform(self, *args, **kwargs):
@@ -306,7 +317,17 @@ class Pipeline(PipelineBase):
 
         func.__name__ = 'transform'
 
-        outputs = self._iterate_graph(func, *args, **kwargs)
+        # Initialize run id
+        run_id = str(uuid4())
+        for mixin in self.mixins:
+            mixin._start_run(run_id)
+
+        try:
+            outputs = self._iterate_graph(func, *args, **kwargs)
+        finally:
+            for mixin in self.mixins:
+                mixin._end_run()
+
         rv = {'{}_{}'.format(k[0].name, k[1]): v for k, v in outputs.items()}
         # Return just dataframe if len 1
         if len(rv) == 1:

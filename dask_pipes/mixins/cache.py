@@ -10,7 +10,7 @@ from urllib.parse import urlparse, unquote
 import pathlib
 import socket
 from yaml.constructor import ConstructorError
-from .base import PipelineMixin, NodeCallable, NodeBase
+from dask_pipes.base import PipelineMixin, NodeCallable, NodeBase
 from ..exceptions import DaskPipesException
 
 __all__ = ['path_from_uri', 'path_to_uri',
@@ -210,18 +210,27 @@ def dataframe_dumper_factory(directory, node_name=None, run_name=None, df_dump_c
     return get_dumper
 
 
-NodeCache = namedtuple('NodeCache', ['id', 'node_name', 'time', 'node_input', 'node_output'])
+NodeCache = namedtuple('NodeCache', ['id', 'run_id', 'node_name', 'time', 'node_input', 'node_output'])
+NodeCacheLoad = namedtuple('NodeCacheLoad', ['id', 'run_id', 'node_name', 'time', 'cache_id'])
 
 
 class CacheMixin(PipelineMixin):
 
     def __init__(self, cache_dir, recover_categories=True):
+        super().__init__()
         self.cache_dir = os.path.abspath(cache_dir)
         self.recover_categories = recover_categories
 
-        self._id_counter = 0
+        self._cache_id_counter = 0
         self._cache: List[NodeCache] = list()
+
+        self._cache_loads_id_counter = 0
+        self._cache_loads: List[NodeCacheLoad] = list()
+
+        # Used for fast access of latest cache
         self._latest_cache_by_input = dict()
+
+        # Used in yaml loader, dumper to prevent multiple dumps/loads of same dataframe
         self._df_dump_cache = dict()
         self._df_load_cache = dict()
 
@@ -235,6 +244,10 @@ class CacheMixin(PipelineMixin):
     def cache(self):
         return pd.DataFrame(self._cache).set_index('id')
 
+    @property
+    def cache_loads(self):
+        return pd.DataFrame(self._cache_loads).set_index('id')
+
     def add_record(self, node_name, node_input, node_output, time=None):
         dumper = dataframe_dumper_factory(
             self.cache_dir,
@@ -245,17 +258,15 @@ class CacheMixin(PipelineMixin):
         node_input = yaml.dump(node_input, Dumper=dumper)
         node_output = yaml.dump(node_output, Dumper=dumper)
 
-        if time is None:
-            time = datetime.now()
-
         rec = NodeCache(
-            id=self._id_counter,
+            id=self._cache_id_counter,
+            run_id=self.run_id,
             node_name=node_name,
-            time=time,
+            time=time or datetime.now(),
             node_input=node_input,
             node_output=node_output
         )
-        self._id_counter += 1
+        self._cache_id_counter += 1
 
         # Make cache records
         self._cache.append(rec)
@@ -277,7 +288,7 @@ class CacheMixin(PipelineMixin):
     #     )
     #     yaml.dump(data, Dumper=dumper)
 
-    def get_latest_output(self, node_name, node_input=None):
+    def get_latest_output(self, node_name, node_input=None, time=None):
         if node_input is None:
             matches = sorted(filter(lambda x: x.node_name == node_name, self._cache), key=lambda x: x.time)
             if len(matches) == 0:
@@ -295,12 +306,25 @@ class CacheMixin(PipelineMixin):
         )
         orig_input = yaml.dump(node_input, Dumper=dumper)
         if (node_name, orig_input) in self._latest_cache_by_input:
-            node_cache = self._latest_cache_by_input[(node_name, orig_input)]
+            node_cache: NodeCache = self._latest_cache_by_input[(node_name, orig_input)]
             loader = dataframe_loader_factory(
                 df_dump_cache=self._df_dump_cache,
                 df_load_cache=self._df_load_cache,
             )
-            return yaml.load(node_cache.node_output, Loader=loader)
+            match = yaml.load(node_cache.node_output, Loader=loader)
+
+            # Append cache load info
+            rec = NodeCacheLoad(
+                id=self._cache_loads_id_counter,
+                run_id=self.run_id,
+                node_name=node_name,
+                time=time or datetime.now(),
+                cache_id=node_cache.id,
+            )
+            self._cache_loads_id_counter += 1
+            self._cache_loads.append(rec)
+
+            return match
         else:
             raise DaskPipesException("Cache for node %s and specific input does not exist" % node_name)
 

@@ -1,8 +1,9 @@
 from dask_pipes.base.graph import Graph, VertexBase, EdgeBase
 from dask_pipes.exceptions import DaskPipesException
-from typing import List, Optional
+from typing import List, Optional, Tuple, Any, Dict
 from sklearn.base import BaseEstimator, TransformerMixin
 import inspect
+
 from dask_pipes.utils import (get_arguments_description,
                               get_return_description,
                               ReturnDescription,
@@ -18,7 +19,7 @@ from dask_pipes.base._pipeline_utils import (PipelineInput,
                                              validate_fit_transform)
 
 __all__ = ['PipelineMeta', 'PipelineBase', 'NodeBaseMeta', 'NodeBase', 'NodeSlot', 'NodeConnection',
-           'getcallargs_inverse']
+           'getcallargs_inverse', 'PipelineMixin', 'NodeCallable']
 
 
 class NodeSlot:
@@ -380,9 +381,58 @@ class PipelineMeta(type):
         return super().__new__(mcs, name, bases, attrs)
 
 
+class NodeCallable:
+    def __call__(self, node: NodeBase, node_input: Tuple[Tuple[Any], Dict[str, Any]],
+                 has_downstream: bool = True) -> Any: ...
+
+
+class PipelineMixin:
+
+    def __init__(self):
+        self._run_id = None
+
+    @property
+    def run_id(self):
+        if self._run_id is None:
+            raise DaskPipesException("Run not started yet")
+        return self._run_id
+
+    def _fit(self,
+             func: NodeCallable,
+             node: NodeBase,
+             node_input: Tuple[Tuple[Any], Dict[str, Any]],
+             has_downstream=True):
+        return func(node, node_input, has_downstream=has_downstream)
+
+    def _transform(self,
+                   func: NodeCallable,
+                   node: NodeBase,
+                   node_input: Tuple[Tuple[Any], Dict[str, Any]],
+                   has_downstream=True):
+        return func(node, node_input, has_downstream=has_downstream)
+
+    def _wrap_fit(self, fit):
+        def func(node, node_input, has_downstream=True):
+            return self._fit(fit, node, node_input, has_downstream=has_downstream)
+
+        return func
+
+    def _wrap_transform(self, transform):
+        def func(node, node_input, has_downstream=True):
+            return self._transform(transform, node, node_input, has_downstream=has_downstream)
+
+        return func
+
+    def _start_run(self, run_id: str):
+        self._run_id = run_id
+
+    def _end_run(self):
+        self._run_id = None
+
+
 class PipelineBase(Graph, metaclass=PipelineMeta):
 
-    def __init__(self, mixins=None):
+    def __init__(self, mixins: Optional[List[PipelineMixin]] = None):
         super().__init__()
 
         # Pipeline inputs. use set_input to add input
@@ -396,9 +446,9 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         self._params_downstream = None
 
         if mixins is None:
-            self.mixins = list()
+            self.mixins: List[PipelineMixin] = list()
         else:
-            self.mixins = mixins
+            self.mixins: List[PipelineMixin] = mixins
 
     @staticmethod
     def _get_default_node_name(node, counter=None):
