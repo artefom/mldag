@@ -19,7 +19,7 @@ from dask_pipes.base._pipeline_utils import (PipelineInput,
                                              validate_fit_transform)
 
 __all__ = ['PipelineMeta', 'PipelineBase', 'NodeBaseMeta', 'NodeBase', 'NodeSlot', 'NodeConnection',
-           'getcallargs_inverse', 'PipelineMixin', 'NodeCallable', 'PipelineRunBase']
+           'getcallargs_inverse', 'PipelineMixin', 'NodeCallable']
 
 
 class NodeSlot:
@@ -430,16 +430,6 @@ class PipelineMixin:
         self._run_id = None
 
 
-class PipelineRunBase:
-
-    def __init__(self, inputs):
-        self.inputs = inputs
-        self.outputs = None
-
-    def set_outputs(self, outputs):
-        self.outputs = outputs
-
-
 class PipelineBase(Graph, metaclass=PipelineMeta):
 
     def __init__(self, mixins: Optional[List[PipelineMixin]] = None):
@@ -453,7 +443,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         # For naming unnamed nodes
         self.node_name_counter = 0
 
-        self._params_downstream = None
+        self._param_downstream_mapping: Optional[Dict[str, List[Tuple[Any, str]]]] = None
 
         if mixins is None:
             self.mixins: List[PipelineMixin] = list()
@@ -565,8 +555,8 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
     @property
     def inputs(self) -> List[inspect.Parameter]:
         """
-        Get human-friendly list of names of current pipeline inputs without duplicates
-        :return: list of argument names for fit function
+        Get list of inspect.parameter without duplicates (same value can be passed to multiple nodes)
+        :return: list of inspect.Parameter for fit function, excluding self
         """
         return get_input_signature(self)[0][1:]
 
@@ -694,8 +684,8 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         :return:
         """
         if len(self._inputs) > 0:
-            new_params, params_downstream = get_input_signature(self)
-            self._params_downstream = params_downstream
+            new_params, param_downstream_mapping = get_input_signature(self)
+            self._param_downstream_mapping = param_downstream_mapping
             return_annotation = self.__class__.fit.__annotations__.get('return', inspect._empty)
 
             set_fit_signature(self, inspect.Signature(
@@ -706,7 +696,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
                 parameters=new_params,
                 return_annotation=return_annotation))
         else:
-            self._params_downstream = None
+            self._param_downstream_mapping = None
             reset_fit_signature(self)
             reset_transform_signature(self)
 
@@ -757,6 +747,60 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
                               upstream_slot=upstream_slot,
                               downstream_slot=downstream_slot)
         return self.add_edge(edge)
+
+    def _parse_arguments(self, *args, **kwargs) -> Dict[NodeBase, Dict[str, Any]]:
+        """
+        Parse fit arguments based on current pipeline inputs and return dictionary of node inputs.
+        If argument has a default value and not provided,
+        result dictionary will contain default value for that argument
+        :param fit_params:
+        :param args: fit arguments
+        :param kwargs: fit key-word arguments
+        :return:
+        """
+
+        fit_params = [param for param in self.inputs if param.name in self._param_downstream_mapping]
+
+        # Used for injection of custom signature before passing to getcallargs
+        # We need to distill self.fit from parameters passed to pipeline against parameters passed to input nodes
+        # This function is used to call inspect.getcallargs for getting function arguments without function itself
+        def fit(*_, **__):
+            pass
+
+        fit.__signature__ = inspect.Signature(
+            parameters=fit_params
+        )
+
+        var_pos = {param.name for param in fit_params if param.kind == inspect.Parameter.VAR_POSITIONAL}
+        var_key = {param.name for param in fit_params if param.kind == inspect.Parameter.VAR_KEYWORD}
+        rv = inspect.getcallargs(fit, *args, **kwargs)
+        # Replace variadic with dummy asterisk
+        # Doing this, because one variadic can have different names
+        rv = {(k if k not in var_pos else '*') if k not in var_key else '**': v for k, v in rv.items()}
+
+        node_arguments: Dict[NodeBase: Dict[str, Any]] = {node: dict() for node in self.vertices}
+
+        # Convert pipeline arguments to node arguments
+        for inp in self._inputs:
+            if inp.kind == inspect.Parameter.VAR_KEYWORD:
+                inp_name = '**'
+            elif inp.kind == inspect.Parameter.VAR_POSITIONAL:
+                inp_name = '*'
+            else:
+                inp_name = inp.name
+            if inp_name in rv:
+                node_arguments[inp.downstream_node][inp.downstream_slot] = rv[inp_name]
+            else:
+                # We want to be extremely careful on each step
+                # Even though, _parse_arguments must return full proper dictionary, filled with default values
+                # Double-check it here
+                raise DaskPipesException(
+                    "Pipeline input {}->{}['{}'] not provided "
+                    "and does not have default value".format(inp.name,
+                                                             inp.downstream_node,
+                                                             inp.downstream_slot, ))
+
+        return node_arguments
 
     # Change signature of functions
     def add_edge(self, node_connection: NodeConnection, edge_id=None) -> NodeConnection:

@@ -1,9 +1,9 @@
 from dask_pipes.base.graph import VertexWidthFirst
 from dask_pipes.exceptions import DaskPipesException
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 import inspect
 from dask_pipes.utils import ReturnDescription
-from dask_pipes.base import PipelineBase, PipelineRunBase, NodeBase, NodeConnection, getcallargs_inverse
+from dask_pipes.base import PipelineBase, NodeBase, NodeConnection, getcallargs_inverse
 from uuid import uuid4
 
 from copy import deepcopy
@@ -15,156 +15,130 @@ class _Empty:
     pass
 
 
-class PipelineRun(PipelineRunBase):
-    pass
-
-
-class Pipeline(PipelineBase):
+def _parse_node_output(node, output):
     """
-    Pipeline is a graph structure, containing relationships between NodeBase (vertices)
-    with NodeConnection as edges
+    Get dictionary of key-values from return of function
 
-    Defines fit and transform methods which iterate vertices in width-first order,
-    calling fit() and transform() methods of nodes and
-    piping outputs of upstream nodes to inputs of downstream nodes
+    Converts list, tuple or dict to key-value pairs
+    makes sanity checks
+
+    :param node: class of node to read transform return annotation from
+    :param output: return value of .transform() method
+    :return:
     """
+    expected_result: List[ReturnDescription] = node.outputs
+    expected_keys = [i.name for i in expected_result]
+    if not isinstance(output, list) and not isinstance(output, tuple) and not isinstance(output, dict):
+        output = (output,)
 
-    def __lshift__(self, other):
-        raise NotImplementedError()
-
-    def set_upstream(self, other,
-                     upstream_slot: Optional[str] = None,
-                     downstream_slot: Optional[str] = None):
-        raise NotImplementedError()
-
-    def _parse_arguments(self, *args, **kwargs) -> Dict[str, Any]:
-        """
-        Parse fit arguments and return dictionary of values.
-        If argument has a default value and not provided,
-        result dictionary will contain default value for that argument
-        :param args: fit arguments
-        :param kwargs: fit key-word arguments
-        :return:
-        """
-
-        # Used for injection of custom signature before passing to getcallargs
-        # We need to distill self.fit from parameters passed to pipeline against parameters passed to input nodes
-        # This function is used to call inspect.getcallargs for getting function arguments without function itself
-        def fit(*_, **__):
-            pass
-
-        fit_params = [param for param in self.inputs if param.name in self._params_downstream]
-        fit.__signature__ = inspect.Signature(
-            parameters=fit_params
-        )
-
-        var_pos = {param.name for param in fit_params if param.kind == inspect.Parameter.VAR_POSITIONAL}
-        var_key = {param.name for param in fit_params if param.kind == inspect.Parameter.VAR_KEYWORD}
-        rv = inspect.getcallargs(fit, *args, **kwargs)
-        # Replace variadic with dummy asterisk
-        # Doing this, because one variadic can have different names
-        return {(k if k not in var_pos else '*') if k not in var_key else '**': v for k, v in rv.items()}
-
-    @staticmethod
-    def _parse_node_output(node, output):
-        """
-        Get dictionary of key-values from return of function
-
-        Converts list, tuple or dict to key-value pairs
-        makes sanity checks
-
-        :param node: class of node to read transform return annotation from
-        :param output: return value of .transform() method
-        :return:
-        """
-        expected_result: List[ReturnDescription] = node.outputs
-        expected_keys = [i.name for i in expected_result]
-        if not isinstance(output, list) and not isinstance(output, tuple) and not isinstance(output, dict):
-            output = (output,)
-
-        if isinstance(output, list) or isinstance(output, tuple):  # In case returned list
-            # Check that output length matches
-            if len(output) != len(expected_result):
-                raise DaskPipesException(
-                    "{}.transform result length does not match expected. Expected {}, got {}".format(
-                        node,
-                        ['{}: {}'.format(i.name, i.type) for i in expected_result],
-                        [i.__class__.__name__ for i in output]
-                    ))
-            output = {k: v for k, v in zip(expected_keys, output)}
-        elif isinstance(output, dict):  # In case returned dict
-            got_keys = set(output.keys())
-            # Check that keys match
-            if set(expected_keys) != got_keys:
-                raise DaskPipesException(
-                    "{}.transform result does not match expected. Expected keys: {}, received: {}".format(
-                        node,
-                        expected_keys, got_keys
-                    ))
-        else:
-            raise DaskPipesException("Unknown return type: {}".format(output.__class__.__name__))
-
-        return output
-
-    @staticmethod
-    def _check_arguements(node, edge, node_arguments, downstream_node, node_result):
-        if downstream_node not in node_arguments:
-            raise DaskPipesException("Pipeline does not contain {}".format(downstream_node))
-        if edge.upstream_slot not in node_result:
-            if len(node_result) == 0:
-                raise DaskPipesException("Node {} did not return anything!".format(node))
+    if isinstance(output, list) or isinstance(output, tuple):  # In case returned list
+        # Check that output length matches
+        if len(output) != len(expected_result):
             raise DaskPipesException(
-                "Node {} did not return expected {}; "
-                "recieved {}".format(node, edge.upstream_slot, list(node_result.keys())))
+                "{}.transform result length does not match expected. Expected {}, got {}".format(
+                    node,
+                    ['{}: {}'.format(i.name, i.type) for i in expected_result],
+                    [i.__class__.__name__ for i in output]
+                ))
+        output = {k: v for k, v in zip(expected_keys, output)}
+    elif isinstance(output, dict):  # In case returned dict
+        got_keys = set(output.keys())
+        # Check that keys match
+        if set(expected_keys) != got_keys:
+            raise DaskPipesException(
+                "{}.transform result does not match expected. Expected keys: {}, received: {}".format(
+                    node,
+                    expected_keys, got_keys
+                ))
+    else:
+        raise DaskPipesException("Unknown return type: {}".format(output.__class__.__name__))
 
-    def _iterate_graph(self, func, *args, **kwargs):  # noqa: C901
+    return output
+
+
+def _check_arguements(node, edge, node_arguments, downstream_node, node_result):
+    if downstream_node not in node_arguments:
+        raise DaskPipesException("Pipeline does not contain {}".format(downstream_node))
+    if edge.upstream_slot not in node_result:
+        if len(node_result) == 0:
+            raise DaskPipesException("Node {} did not return anything!".format(node))
+        raise DaskPipesException(
+            "Node {} did not return expected {}; "
+            "recieved {}".format(node, edge.upstream_slot, list(node_result.keys())))
+
+
+class PipelineRun:
+
+    def __init__(self, graph, node_arguments, compute_fit=False, compute_unused=False):
+        self.run_id = str(uuid4())
+        self.compute_fit = compute_fit
+        self.compute_unused = compute_unused
+        self.graph = graph
+        self.node_arguments = node_arguments
+        self.outputs = None
+
+    @staticmethod
+    def _fit(node: NodeBase, node_input):
         """
-        Helper function used in fit and transform methods
-        :param func: function to apply during iteration
-        :param args: pipeline positional input
-        :param kwargs: pipeline key-word input
+        Helper function used for fit call and dumping params
+        :param node:
+        :param node_input:
         :return:
         """
-        args = self._parse_arguments(*args, **kwargs)
-        node_arguments = {node: dict() for node in self.vertices}
-        for inp in self._inputs:
-            # We want to be extremely careful on each step
-            # Even though, _parse_arguments must return full proper dictionary, filled with default values
-            # Double-check it here
-            if inp.kind == inspect.Parameter.VAR_KEYWORD:
-                inp_name = '**'
-            elif inp.kind == inspect.Parameter.VAR_POSITIONAL:
-                inp_name = '*'
-            else:
-                inp_name = inp.name
-            if inp_name in args:
-                node_arguments[inp.downstream_node][inp.downstream_slot] = args[inp_name]
-            else:
-                raise DaskPipesException(
-                    "Pipeline input {}->{}['{}'] not provided "
-                    "and does not have default value".format(inp.name,
-                                                             inp.downstream_node,
-                                                             inp.downstream_slot, ))
+        # ----------------------
+        # Fit node
+        # ----------------------
+        # Make copy of arguments
+        node_input = deepcopy(node_input)
+        node.fit(*node_input[0], **node_input[1])
+
+    @staticmethod
+    def _transform(node: NodeBase, node_input):
+        """
+        Helper function, used for transform call and dumping outputs
+        :param node:
+        :param node_input:
+        :return:
+        """
+
+        # ----------------------
+        # Transform node
+        # ----------------------
+        # Make copy of arguments
+        node_input = deepcopy(node_input)
+
+        node_result = node.transform(*node_input[0], **node_input[1])
+        return node_result
+
+    def compute(self):  # noqa: C901
         outputs = dict()
 
-        for node in VertexWidthFirst(self):
+        for node in VertexWidthFirst(self.graph):
             try:
                 node: NodeBase
-                node_callargs = node_arguments[node]
+                node_callargs = self.node_arguments[node]
 
                 if len(node_callargs) == 0:
                     raise DaskPipesException("No input for node {}".format(node))
 
-                downstream_edges = self.get_downstream_edges(node)
+                downstream_edges = self.graph.get_downstream_edges(node)
                 has_downstream = len(downstream_edges) > 0
 
                 node_input = getcallargs_inverse(node.fit, **node_callargs)
-                node_result = func(node, node_input, has_downstream=has_downstream)
 
-                if node_result is _Empty:
-                    continue
+                # Fit, transform node
+                if self.compute_fit:
+                    node.fit(*deepcopy(node_input[0]),
+                             **deepcopy(node_input[1]),
+                             )
+                if has_downstream or self.compute_unused:
+                    node_result = _parse_node_output(node,
+                                                     node.transform(
+                                                         *deepcopy(node_input[0]),
+                                                         **deepcopy(node_input[1]),
+                                                     ))
                 else:
-                    node_result = Pipeline._parse_node_output(node, node_result)
+                    continue
 
                 if not isinstance(node_result, dict):
                     raise DaskPipesException(
@@ -177,7 +151,7 @@ class Pipeline(PipelineBase):
                 for edge in downstream_edges:
                     downstream_node: NodeBase = edge.downstream
                     edge: NodeConnection
-                    self._check_arguements(node, edge, node_arguments, downstream_node, node_result)
+                    _check_arguements(node, edge, self.node_arguments, downstream_node, node_result)
                     if edge.upstream_slot in unused_output:
                         unused_output.remove(edge.upstream_slot)
 
@@ -195,7 +169,7 @@ class Pipeline(PipelineBase):
                         else:
                             upstream_val = node_result[edge.upstream_slot]
 
-                    downstream_args = node_arguments[downstream_node]
+                    downstream_args = self.node_arguments[downstream_node]
                     if downstream_param.kind == inspect.Parameter.VAR_POSITIONAL:
                         if edge.downstream_slot not in downstream_args:
                             downstream_args[edge.downstream_slot] = list()
@@ -235,40 +209,34 @@ class Pipeline(PipelineBase):
             except Exception as ex:
                 raise DaskPipesException("Error occurred during {}".format(node)) from ex
 
-        return outputs
+        outputs = {'{}_{}'.format(k[0].name, k[1]): v for k, v in outputs.items()}
+        self.outputs = outputs
+        return self
 
-    @staticmethod
-    def _fit(node: NodeBase, node_input):
-        """
-        Helper function used for fit call and dumping params
-        :param node:
-        :param node_input:
-        :return:
-        """
-        # ----------------------
-        # Fit node
-        # ----------------------
-        # Make copy of arguments
-        node_input = deepcopy(node_input)
-        node.fit(*node_input[0], **node_input[1])
+    def __str__(self):
+        return repr(self)
 
-    @staticmethod
-    def _transform(node: NodeBase, node_input):
-        """
-        Helper function, used for transform call and dumping outputs
-        :param node:
-        :param node_input:
-        :return:
-        """
+    def __repr__(self):
+        return 'PipelineRun<{}>'.format(self.run_id[:5])
 
-        # ----------------------
-        # Transform node
-        # ----------------------
-        # Make copy of arguments
-        node_input = deepcopy(node_input)
 
-        node_result = node.transform(*node_input[0], **node_input[1])
-        return node_result
+class Pipeline(PipelineBase):
+    """
+    Pipeline is a graph structure, containing relationships between NodeBase (vertices)
+    with NodeConnection as edges
+
+    Defines fit and transform methods which iterate vertices in width-first order,
+    calling fit() and transform() methods of nodes and
+    piping outputs of upstream nodes to inputs of downstream nodes
+    """
+
+    def __lshift__(self, other):
+        raise NotImplementedError()
+
+    def set_upstream(self, other,
+                     upstream_slot: Optional[str] = None,
+                     downstream_slot: Optional[str] = None):
+        raise NotImplementedError()
 
     def fit(self, *args, **kwargs):
         """
@@ -278,33 +246,12 @@ class Pipeline(PipelineBase):
         :param kwargs: pipeline key-word input to  pass to input nodes
         :return: self
         """
-
-        def func(node, node_input, has_downstream=True):
-            self._fit(node, node_input)
-            if has_downstream:
-                rv = self._transform(node, node_input)
-                return rv
-            return _Empty
-
-        for mixin in self.mixins:
-            func = mixin._wrap_fit(func)
-
-        func.__name__ = 'fit'
-
-        # Initialize run id
-        run_id = str(uuid4())
-
-        run = PipelineRun(inputs=(args, kwargs))
-
-        for mixin in self.mixins:
-            mixin._start_run(run_id)
-
-        try:
-            self._iterate_graph(func, *args, **kwargs)
-        finally:
-            for mixin in self.mixins:
-                mixin._end_run()
-        return self
+        node_args = self._parse_arguments(*args, **kwargs)
+        run = PipelineRun(graph=self,
+                          node_arguments=node_args,
+                          compute_fit=True,
+                          compute_unused=False)
+        return run.compute()
 
     def transform(self, *args, **kwargs):
         """
@@ -314,30 +261,9 @@ class Pipeline(PipelineBase):
         :return: dictionary of datasets, or single dataset.
         Output of nodes that was not piped anywhere
         """
-
-        def func(node, node_input, has_downstream=True):
-            return self._transform(node, node_input)
-
-        for mixin in self.mixins:
-            func = mixin._wrap_transform(func)
-
-        func.__name__ = 'transform'
-
-        # Initialize run id
-        run_id = str(uuid4())
-        for mixin in self.mixins:
-            mixin._start_run(run_id)
-
-        run = PipelineRun(inputs=(args, kwargs))
-
-        try:
-            outputs = self._iterate_graph(func, *args, **kwargs)
-        finally:
-            for mixin in self.mixins:
-                mixin._end_run()
-
-        rv = {'{}_{}'.format(k[0].name, k[1]): v for k, v in outputs.items()}
-        # Return just dataframe if len 1
-        if len(rv) == 1:
-            return next(iter(rv.values()))
-        return rv
+        node_args = self._parse_arguments(*args, **kwargs)
+        run = PipelineRun(graph=self,
+                          node_arguments=node_args,
+                          compute_fit=False,
+                          compute_unused=True)
+        return run.compute()

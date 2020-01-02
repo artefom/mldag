@@ -1,5 +1,6 @@
 from ..exceptions import DaskPipesException
 from types import MethodType
+from typing import List, Tuple, Dict, Any, Union, Iterable
 from collections import namedtuple
 import inspect
 from ..utils import replace_signature
@@ -9,6 +10,7 @@ __all__ = ['PipelineInput', 'PipelineOutput', 'get_input_signature',
            'reset_fit_signature', 'reset_transform_signature',
            'getcallargs_inverse', 'validate_fit_transform']
 
+# Valid order of parameter types (kind+default flag)
 ARG_ORDER = [
     'pos_only_no_default',
     'pos_only_w_default',
@@ -64,6 +66,9 @@ class PipelineInput(namedtuple("_PipelineInput", ['name',
                                                   'default',
                                                   'kind',
                                                   'annotation'])):
+    """
+    Analog of inspect.Parameter, but includes reference to downstream node and it's slot
+    """
     def __str__(self):
         arg_param = inspect.Parameter(name=self.name, kind=self.kind, default=self.default,
                                       annotation=self.annotation)
@@ -76,7 +81,15 @@ class PipelineInput(namedtuple("_PipelineInput", ['name',
 PipelineOutput = namedtuple("PipelineOutput", ['output_name', 'upstream_slot', 'upstream_node'])
 
 
-def getcallargs_inverse(func, **callargs):  # noqa C901
+def getcallargs_inverse(func, **callargs) -> Tuple[Iterable[Any], Dict[str, Any]]:  # noqa C901
+    """
+    Inverse function of inspect.getcallargs
+
+    Transforms dictionary of values to (*args, **kwargs)
+    :param func:
+    :param callargs:
+    :return:
+    """
     sign = inspect.signature(func)
     args = list()
     kwargs = dict()
@@ -135,7 +148,21 @@ def reset_transform_signature(obj):
     obj.transform = MethodType(obj.__class__.transform, obj)
 
 
-def _split_signature_by_kind(parameters):
+def _split_signature_by_kind(parameters) -> Dict[str, List[inspect.Parameter]]:
+    """
+    Get lists of parameters splitted to dictionary by their kind
+    Parameter kind names:
+    pos_only_no_default
+    pos_only_w_default
+    pos_or_key_no_default
+    var_pos
+    pos_or_key_w_default
+    key_only_no_default
+    key_only_w_default
+    var_key
+    :param parameters:
+    :return: { kind_name: [parameter1, parameter2, ...], ...}
+    """
     params_by_kind = dict()
     params_by_kind['pos_only_no_default'] = list()
     params_by_kind['pos_only_w_default'] = list()
@@ -169,16 +196,24 @@ def _split_signature_by_kind(parameters):
     return params_by_kind
 
 
-def get_input_signature(pipeline):  # noqa C901
+def get_input_signature(pipeline) -> Tuple[List[inspect.Parameter], Dict[str, List[Tuple[Any, str]]]]:  # noqa C901
+    """
+    Get list of parameters and their mapping to specific node inputs
+    :param pipeline: Pipeline to get input from
+    :return: [parameter1, parameter2, ...], {parameter1.name: [(node,slot_name), ...] }
+    """
     # Split input by kind
     original_signature = list(inspect.signature(pipeline.__class__.fit).parameters.values())
     reserved_names = {param.name for param in original_signature}
+
+    # Pipeline may contain some custom parameters, take them into account by using original signature
     params_by_kind = _split_signature_by_kind(original_signature)
 
-    # Impute parameters
     if len(pipeline._inputs) > 0:
-        params_by_kind['var_pos'] = list()
-        params_by_kind['var_key'] = list()
+        # Our pipeline has some inputs, remove default *args, **kwargs parameters
+        # and populate signature with new parameters
+        params_by_kind['var_pos'] = list()  # Remove default 'args' parameter
+        params_by_kind['var_key'] = list()  # Remove default 'kwargs' parameter
         for k, v in _split_signature_by_kind(pipeline._inputs).items():
             # Validate param names
             for param in v:
@@ -187,8 +222,15 @@ def get_input_signature(pipeline):  # noqa C901
                         "Parameter name {} is reserved by pipeline's fit signature".format(param.name))
             params_by_kind[k].extend(v)
 
-    # Rename variadic
-    def _rename_params(new_name, params):
+    def _rename_params(new_name, params: List[Union[inspect.Parameter, PipelineInput]]):
+        """
+        Returns inspect.parameter or PipelineInput with new name
+        Useful for renaming all variadic parameters of sub-nodes to same standard name i.e.: args, kwargs
+        to allow them to merge
+        :param new_name: New name to assign to parameters
+        :param params: List of parameters to rename
+        :return:
+        """
         new_param_list = list()
         for param in params:
             if isinstance(param, inspect.Parameter):
@@ -215,16 +257,23 @@ def get_input_signature(pipeline):  # noqa C901
 
     var_pos_names = set()
     if len(params_by_kind['var_pos']) > 1:
+        # If pipeline has multiple positional variadic arguments, name them all 'args', so they will merge
+        # Since multiple positional variadic parameters are not allowed
         var_pos_names = {param.name for param in params_by_kind['var_pos']}
         if len(var_pos_names) > 1:
             params_by_kind['var_pos'] = _rename_params('args', params_by_kind['var_pos'])
 
     var_key_names = set()
     if len(params_by_kind['var_key']) > 1:
+        # If pipeline has multiple variadic keyword arguments, name them all 'kwargs', so they will merge
+        # Since multiple keyword variadic parameters are not allowed
         var_key_names = {param.name for param in params_by_kind['var_key']}
         if len(var_key_names) > 1:
             params_by_kind['var_key'] = _rename_params('kwargs', params_by_kind['var_key'])
 
+    # Set priority of parameter types to omit errors
+    # Parameter categories are grouped to allow handling parameters with the same name but different categories
+    # Parameters in one group are guaranteed to be unique and in correct order
     params_priority = [['pos_only_w_default',
                         'pos_only_no_default'],
                        ['pos_or_key_w_default',
@@ -236,7 +285,8 @@ def get_input_signature(pipeline):  # noqa C901
                        ['pos_or_key_w_default',
                         'key_only_no_default']]
 
-    # Move params up on hierarchy
+    # Move params up on the hierarchy
+    # If the same parameter name has and does not have the default value, just assume it has no default value
     for priority_hierarchy in params_priority:
         for prev_cat, next_cat in zip(priority_hierarchy[:-1], priority_hierarchy[1:]):
             prev_cat_names = {i.name for i in params_by_kind[prev_cat]}
@@ -245,9 +295,10 @@ def get_input_signature(pipeline):  # noqa C901
             params_by_kind[next_cat].extend([i for i in params_by_kind[prev_cat] if i.name in name_inters])
             params_by_kind[prev_cat] = [i for i in params_by_kind[prev_cat] if i.name not in name_inters]
 
-    # Convert to inspect.Parameter
-    params_downstream = dict()
-    new_params_by_kind = dict()
+    # Convert list of mixed parameters and PipelineInputs to two dictionaries
+    params_downstream: Dict[str, List[Tuple[Any, str]]] = dict()  # Parameter name: Downstream node slot
+    new_params_by_kind: Dict[str: List[inspect.Parameter]] = dict()  # Parameter kind: list   of parameters
+
     for cat, params in params_by_kind.items():
         new_params = list()
         for param in params:
@@ -267,7 +318,7 @@ def get_input_signature(pipeline):  # noqa C901
         new_params_by_kind[cat] = new_params
     params_by_kind = new_params_by_kind
 
-    # Drop duplicates in each category
+    # Drop duplicates in each category, handling presence of default values correctly
     new_params_by_kind = dict()
     for cat, params in params_by_kind.items():
         seen_params = dict()
@@ -291,7 +342,7 @@ def get_input_signature(pipeline):  # noqa C901
         new_params_by_kind[cat] = [seen_params[i] for i in seen_params_order]
     params_by_kind = new_params_by_kind
 
-    # Check for duplicates
+    # Check for duplicates in final result
     param_dups = dict()
     for cat, params in params_by_kind.items():
         for param in params:
@@ -308,7 +359,7 @@ def get_input_signature(pipeline):  # noqa C901
                     param_dups[param_name] = param.kind
 
     # Concatenate parameters
-    rv = list()
+    rv: List[inspect.Parameter] = list()
     for cat in ARG_ORDER:
         rv.extend(params_by_kind[cat])
 
