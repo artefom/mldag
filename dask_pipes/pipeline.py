@@ -11,10 +11,6 @@ from copy import deepcopy
 __all__ = ['Pipeline']
 
 
-class _Empty:
-    pass
-
-
 def _parse_node_output(node, output):
     """
     Get dictionary of key-values from return of function
@@ -57,7 +53,7 @@ def _parse_node_output(node, output):
 
 
 def _check_arguements(node, edge, node_arguments, downstream_node, node_result):
-    if downstream_node not in node_arguments:
+    if downstream_node.name not in node_arguments:
         raise DaskPipesException("Pipeline does not contain {}".format(downstream_node))
     if edge.upstream_slot not in node_result:
         if len(node_result) == 0:
@@ -76,6 +72,7 @@ class PipelineRun:
         self.graph = graph
         self.node_arguments = node_arguments
         self.outputs = None
+        self.computed = False
 
     @staticmethod
     def _fit(node: NodeBase, node_input):
@@ -111,12 +108,15 @@ class PipelineRun:
         return node_result
 
     def compute(self):  # noqa: C901
+        if self.computed:
+            raise DaskPipesException("Run already computed")
+
         outputs = dict()
 
         for node in VertexWidthFirst(self.graph):
             try:
                 node: NodeBase
-                node_callargs = self.node_arguments[node]
+                node_callargs = self.node_arguments[node.name]
 
                 if len(node_callargs) == 0:
                     raise DaskPipesException("No input for node {}".format(node))
@@ -169,7 +169,7 @@ class PipelineRun:
                         else:
                             upstream_val = node_result[edge.upstream_slot]
 
-                    downstream_args = self.node_arguments[downstream_node]
+                    downstream_args = self.node_arguments[downstream_node.name]
                     if downstream_param.kind == inspect.Parameter.VAR_POSITIONAL:
                         if edge.downstream_slot not in downstream_args:
                             downstream_args[edge.downstream_slot] = list()

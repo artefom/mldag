@@ -748,7 +748,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
                               downstream_slot=downstream_slot)
         return self.add_edge(edge)
 
-    def _parse_arguments(self, *args, **kwargs) -> Dict[NodeBase, Dict[str, Any]]:
+    def _parse_arguments(self, *args, **kwargs) -> Dict[str, Dict[str, Any]]:
         """
         Parse fit arguments based on current pipeline inputs and return dictionary of node inputs.
         If argument has a default value and not provided,
@@ -778,7 +778,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         # Doing this, because one variadic can have different names
         rv = {(k if k not in var_pos else '*') if k not in var_key else '**': v for k, v in rv.items()}
 
-        node_arguments: Dict[NodeBase: Dict[str, Any]] = {node: dict() for node in self.vertices}
+        node_arguments: Dict[str, Dict[str, Any]] = {node.name: dict() for node in self.vertices}
 
         # Convert pipeline arguments to node arguments
         for inp in self._inputs:
@@ -789,7 +789,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
             else:
                 inp_name = inp.name
             if inp_name in rv:
-                node_arguments[inp.downstream_node][inp.downstream_slot] = rv[inp_name]
+                node_arguments[inp.downstream_node.name][inp.downstream_slot] = rv[inp_name]
             else:
                 # We want to be extremely careful on each step
                 # Even though, _parse_arguments must return full proper dictionary, filled with default values
