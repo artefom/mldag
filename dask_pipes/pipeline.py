@@ -110,6 +110,7 @@ class PipelineRun:
     def compute(self):  # noqa: C901
         if self.computed:
             raise DaskPipesException("Run already computed")
+        self.computed = True
 
         outputs = dict()
 
