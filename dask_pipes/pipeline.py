@@ -3,7 +3,7 @@ from dask_pipes.exceptions import DaskPipesException
 from typing import Any, Dict, List, Optional
 import inspect
 from dask_pipes.utils import ReturnDescription
-from dask_pipes.base import PipelineBase, NodeBase, NodeConnection, getcallargs_inverse
+from dask_pipes.base import PipelineBase, PipelineRunBase, NodeBase, NodeConnection, getcallargs_inverse
 from uuid import uuid4
 
 from copy import deepcopy
@@ -12,6 +12,10 @@ __all__ = ['Pipeline']
 
 
 class _Empty:
+    pass
+
+
+class PipelineRun(PipelineRunBase):
     pass
 
 
@@ -290,6 +294,8 @@ class Pipeline(PipelineBase):
         # Initialize run id
         run_id = str(uuid4())
 
+        run = PipelineRun(inputs=(args, kwargs))
+
         for mixin in self.mixins:
             mixin._start_run(run_id)
 
@@ -321,6 +327,8 @@ class Pipeline(PipelineBase):
         run_id = str(uuid4())
         for mixin in self.mixins:
             mixin._start_run(run_id)
+
+        run = PipelineRun(inputs=(args, kwargs))
 
         try:
             outputs = self._iterate_graph(func, *args, **kwargs)

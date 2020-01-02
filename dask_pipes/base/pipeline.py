@@ -19,7 +19,7 @@ from dask_pipes.base._pipeline_utils import (PipelineInput,
                                              validate_fit_transform)
 
 __all__ = ['PipelineMeta', 'PipelineBase', 'NodeBaseMeta', 'NodeBase', 'NodeSlot', 'NodeConnection',
-           'getcallargs_inverse', 'PipelineMixin', 'NodeCallable']
+           'getcallargs_inverse', 'PipelineMixin', 'NodeCallable', 'PipelineRunBase']
 
 
 class NodeSlot:
@@ -428,6 +428,16 @@ class PipelineMixin:
 
     def _end_run(self):
         self._run_id = None
+
+
+class PipelineRunBase:
+
+    def __init__(self, inputs):
+        self.inputs = inputs
+        self.outputs = None
+
+    def set_outputs(self, outputs):
+        self.outputs = outputs
 
 
 class PipelineBase(Graph, metaclass=PipelineMeta):

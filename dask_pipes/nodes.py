@@ -6,6 +6,7 @@ import dask.dataframe as dd
 import numpy as np
 import pandas.api.types
 from types import MethodType
+from typing import Union
 import inspect
 
 __all__ = ['as_node', 'NodeWrapper', 'RobustCategoriser', 'DateProcessor', 'AddNaCategory', 'AddNaIndicator']
@@ -111,8 +112,11 @@ class RobustCategoriser(NodeBase):
         self.frequent_vals_ = None
         self.coverage_ = None
 
-    def get_col_stats(self, col: dd.Series):
-        val_counts = col.value_counts().compute()
+    def get_col_stats(self, col: Union[pd.Series, dd.Series]):
+        # Compute value counts
+        val_counts = col.value_counts()
+        if isinstance(col, dd.Series):
+            val_counts = val_counts.compute()
         total_count = val_counts.sum()
         categories = list()
         coverage = 0
@@ -159,7 +163,7 @@ class RobustCategoriser(NodeBase):
         def get_col_transformer(categories, repl_val):
             frequent_val_set = set(categories)
 
-            def check_frequent(x):
+            def check_frequent(x, **kwargs):
                 return x if x in frequent_val_set or pd.isna(x) else repl_val
 
             return check_frequent
@@ -172,7 +176,7 @@ class RobustCategoriser(NodeBase):
                         get_col_transformer(col_categories, self.replacement),
                         meta=(col_name, object))
                 cat_type = pd.api.types.CategoricalDtype(sorted(col_categories), ordered=False)
-                X[col_name] = X[col_name].astype(cat_type).cat.as_unknown()
+                X[col_name] = X[col_name].astype(cat_type)
             elif col_name in self.drop_columns_:
                 if self.drop:
                     X.drop(col_name, axis=1)
@@ -193,12 +197,16 @@ class AddNaCategory(NodeBase):
         for col_name in X.columns:
             col = X[col_name]
             if pd.api.types.is_categorical(col):
+                # Checking if column is nullable
                 if col.isna().sum() == 0:
                     pass
-                if col.cat.known:
-                    old_cats = list(col.dtype.categories)
-                else:
-                    raise ValueError("Can only add null category to known categoricals")
+                try:
+                    if not col.cat.known:
+                        raise ValueError("Can only add null category to known categoricals")
+                except AttributeError:
+                    pass
+
+                old_cats = list(col.dtype.categories)
                 new_cats = [self.unknown_cat] + old_cats
                 self.categories_[col_name] = pd.CategoricalDtype(sorted(new_cats), ordered=False)
         return self
@@ -262,15 +270,16 @@ class DateProcessor(NodeBase):
         return self
 
     def transform(self, X, y=None):
+        def to_seconds(x, **kwargs):
+            return x.total_seconds() if not pd.isna(x) else None
+
         for col_name in self.timedeltas_:
-            X[col_name] = X[col_name].apply(
-                lambda x: x.total_seconds() if not pd.isna(x) else None,
-                meta=(col_name, float))
+            X[col_name] = X[col_name].apply(to_seconds,
+                                            meta=(col_name, float))
         for col_name in self.datetimes_:
             retro_date = self.datetime_retro_date_mapping_[col_name]
-            X[col_name] = (X[col_name] - X[retro_date]).apply(
-                lambda x: x.total_seconds() if not pd.isna(x) else None,
-                meta=(col_name, float))
+            X[col_name] = (X[col_name] - X[retro_date]).apply(to_seconds,
+                                                              meta=(col_name, float))
         for col in self.retro_dates_:
             X = X.drop(col, axis=1)
         return X

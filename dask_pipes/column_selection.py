@@ -8,7 +8,14 @@ __all__ = ['Numeric', 'Nullable', 'Categorical', 'Binary']
 
 
 def nullable(dataset: dd.DataFrame) -> List[str]:
-    na_cols = (dataset.isna().sum() > 0).compute()
+    """
+    Return list of nullable columns
+    :param dataset:
+    :return:
+    """
+    na_cols = (dataset.isna().sum() > 0)
+    if isinstance(na_cols, dd.core.Scalar):
+        na_cols = na_cols.compute()
     return list(na_cols[na_cols].index)
 
 
@@ -43,12 +50,14 @@ def categorical(dataset: dd.DataFrame) -> List[str]:
 
 def binary(dataset: dd.DataFrame) -> List[str]:
     """
+    Return list containing 2 or less values
     :param dataset:
     :return:
     """
-    counts = {col_name: dataset[col_name].unique().shape[0].compute()
+    counts = {col_name: dataset[col_name].unique().shape[0]
               for col_name in dataset.columns}
-    return [i for i in dataset.columns if counts[i] == 2]
+    counts = {k: v.compute() if isinstance(v, dd.core.Scalar) else v for k, v in counts.items()}
+    return [i for i in dataset.columns if counts[i] <= 2]
 
 
 class LogicMeta(type):
@@ -65,7 +74,7 @@ class LogicMeta(type):
         return Not(self() if isinstance(self, type) else self)
 
     def __call__(cls, *args, **kwargs):
-        if len(args) == 1 and isinstance(args[0], dd.DataFrame):
+        if len(args) == 1 and (isinstance(args[0], dd.DataFrame) or isinstance(args[0], pd.DataFrame)):
             return super(LogicMeta, cls).__call__()(args[0])
         return super(LogicMeta, cls).__call__(*args, **kwargs)
 

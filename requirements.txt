@@ -1,6 +1,7 @@
+opentracing
 scikit-learn
 pandas>=0.25.3
 numpy>=1.17.3
 dask[dataframe]>=2.6.0
 pyyaml>=5.1.2
-pyarrow>=0.15.1"
+pyarrow>=0.15.1
