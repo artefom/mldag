@@ -218,6 +218,9 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         """
         assert_subclass(node, NodeBase)
 
+    def get_upstream(self):
+        return self.graph.get_upstream_edges()
+
     def set_upstream(self, other,
                      upstream_slot: Optional[str] = None,
                      downstream_slot: Optional[str] = None):
@@ -248,6 +251,9 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         :return: None
         """
         super().set_upstream(other, upstream_slot=upstream_slot, downstream_slot=downstream_slot)
+
+    def get_downstream(self):
+        return self.graph.get_downstream_edges(self)
 
     def set_downstream(self, other,
                        upstream_slot: Optional[str] = None,
