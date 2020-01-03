@@ -26,7 +26,7 @@ def get_ds() -> pd.DataFrame:
         ds['c6'] = pd.Series([timedelta(1.12), None, timedelta(0), timedelta(-10)])
         ds['c7'] = datetime(2019, 7, 1)
         ds = ds.set_index('index').persist()
-        ds = ds.compute()
+        # ds = ds.compute()
         TEST_DS = ds
     return TEST_DS.copy()
 
@@ -35,6 +35,7 @@ def test_pipeline():
     ds = get_ds()
 
     p = dp.pipes.prepareNN()
+    p.mixins = [dp.mixins.CacheMixin('tmp')]
     f_run = p.fit(ds)
     t_run = p.transform(ds)
 

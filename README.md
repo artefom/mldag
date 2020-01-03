@@ -37,7 +37,7 @@ process_pipeline = dp.Sequence([
 )
 
 ds = get_sample_df()
-print(ds.compute())
+print(ds._compute())
 #      c1   c2     c3
 # 0     a  2.0    2.0
 # 1     a  4.0  100.0
@@ -60,7 +60,7 @@ out_ds = dp.transform(
     dataset        = ds,
     dataset_name   = dataset_name)
 
-print(out_ds.compute())
+print(out_ds._compute())
 #               c1  c2        c3
 # index                         
 # 0              a   2 -0.741218

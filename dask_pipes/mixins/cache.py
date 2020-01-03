@@ -1,4 +1,4 @@
-from typing import Any, Dict, Tuple, List
+from typing import Any, Dict, Tuple, List, Union
 from collections import namedtuple
 import yaml
 import pandas as pd
@@ -11,6 +11,7 @@ import pathlib
 import socket
 from yaml.constructor import ConstructorError
 from dask_pipes.base import PipelineMixin, NodeCallable, NodeBase
+from functools import partial
 from ..exceptions import DaskPipesException
 
 __all__ = ['path_from_uri', 'path_to_uri',
@@ -48,7 +49,7 @@ class DataFrameLoader(yaml.SafeLoader):
             self.df_dump_cache = df_dump_cache
         super().__init__(*args, **kwargs)
 
-    def construct_dask_dataframe(self, node):
+    def _construct_df(self, node, as_dask=False):
         state = self.construct_mapping(node)
         if tuple(state.items()) in self.df_load_cache:
             rv = self.df_load_cache[tuple(state.items())]
@@ -64,8 +65,26 @@ class DataFrameLoader(yaml.SafeLoader):
             raise ConstructorError("while constructing a dask.DataFrame", node.start_mark,
                                    "file modified. original ts: %s, but found: %s" % (mtime_orig, mtime),
                                    node.start_mark)
-        rv = dd.read_parquet(path)
-        if self.recover_categories:
+
+        ext = os.path.splitext(path)[1].lower()
+
+        if as_dask:
+            module = dd
+        else:
+            module = pd
+
+        read_any = {
+            '.parquet': module.read_parquet,
+            '.h5': partial(module.read_hdf, key='df'),
+            '.hdf': partial(module.read_hdf, key='df'),
+        }.get(ext)
+
+        if read_any is None:
+            raise DaskPipesException("Unknown file format: {}".format(ext))
+
+        rv = read_any(path)
+
+        if ext == '.parquet' and self.recover_categories and as_dask:
             for col in rv.columns:
                 try:
                     rv[col] = rv[col].cat.set_categories(rv[col].head(1).dtype.categories)
@@ -73,29 +92,14 @@ class DataFrameLoader(yaml.SafeLoader):
                     pass
 
         self.df_load_cache[tuple(state.items())] = rv
-        self.df_dump_cache[rv] = state
+        self.df_dump_cache[id(rv)] = state
         return rv
 
+    def construct_dask_dataframe(self, node):
+        return self._construct_df(node, as_dask=True)
+
     def construct_pandas_dataframe(self, node):
-        state = self.construct_mapping(node)
-        if tuple(state.items()) in self.df_load_cache:
-            rv = self.df_load_cache[tuple(state.items())]
-            return rv
-        path = path_from_uri(state['uri'])
-        if not os.path.exists(path):
-            raise ConstructorError("while constructing a pandas.DataFrame", node.start_mark,
-                                   "file %s not found" % path,
-                                   node.start_mark)
-        mtime_orig = state['mtime']
-        mtime = os.path.getmtime(path)
-        if mtime_orig != mtime:
-            raise ConstructorError("while constructing a pandas.DataFrame", node.start_mark,
-                                   "file modified. original ts: %s, but found: %s" % (mtime_orig, mtime),
-                                   node.start_mark)
-        rv = dd.read_hdf(path, 'df')
-        self.df_dump_cache[rv] = state
-        self.df_load_cache[tuple(state.items())] = rv
-        return rv.copy()
+        return self._construct_df(node, as_dask=False)
 
 
 DataFrameLoader.add_constructor('tag:yaml.org,2002:dask.DataFrame',
@@ -148,33 +152,29 @@ class DataFrameDumper(yaml.SafeDumper):
             rv = '{}-{}'.format(self.run_name, rv)
         return '{}-{}'.format(rv, ts)
 
-    def represent_dd_dataframe(self, data: dd.DataFrame):
-        if data in self.df_dump_cache:
-            dump_data = self.df_dump_cache[data]
+    def _represent_dataframe(self, data: Union[dd.DataFrame, pd.DataFrame], ext='.parquet'):
+        if id(data) in self.df_dump_cache:
+            dump_data = self.df_dump_cache[id(data)]
         else:
-            fname = '{}.parquet'.format(self.get_fname())
+            fname = '{}{}'.format(self.get_fname(), ext)
             fname_full = os.path.join(self.directory, fname)
-            data.to_parquet(fname_full)
+            if ext == '.parquet':
+                data.to_parquet(fname_full, engine='fastparquet', compression='gzip')
+            elif ext == '.h5' or ext == '.hdf':
+                data.to_hdf(fname_full, 'df', mode='w', format='table', append=False)
             dump_data = {
                 'uri': path_to_uri(fname_full),
                 'host': socket.gethostname(),
                 'mtime': os.path.getmtime(fname_full)}
-            self.df_dump_cache[data] = dump_data
+            self.df_dump_cache[id(data)] = dump_data
+        return dump_data
+
+    def represent_dd_dataframe(self, data: dd.DataFrame):
+        dump_data = self._represent_dataframe(data, ext='.parquet')
         return self.represent_mapping('tag:yaml.org,2002:dask.DataFrame', dump_data)
 
     def represent_pd_dataframe(self, data: pd.DataFrame):
-        if data in self.df_dump_cache:
-            dump_data = self.df_dump_cache[data]
-        else:
-            fname = '{}.hdf'.format(uuid4())
-            fname_full = os.path.join(self.directory, fname)
-            data.to_hdf(fname_full, 'df')
-            dump_data = {
-                'uri': path_to_uri(fname_full),
-                'host': socket.gethostname(),
-                'ts': os.path.getatime(fname_full)}
-            self.df_dump_cache[data] = dump_data
-            self.df_load_cache[tuple(dump_data.items())] = data
+        dump_data = self._represent_dataframe(data, ext='.hdf')
         return self.represent_mapping('tag:yaml.org,2002:pandas.DataFrame', dump_data)
 
 
@@ -272,22 +272,6 @@ class CacheMixin(PipelineMixin):
         self._cache.append(rec)
         self._latest_cache_by_input[(node_name, node_input)] = rec
 
-    # def load(self, data):
-    #     loader = dataframe_loader_factory(
-    #         df_dump_cache=self.dump_cache,
-    #         df_load_cache=self.load_cache,
-    #     )
-    #     return yaml.load(data, Loader=loader)
-    #
-    # def dump(self, data):
-    #     dumper = dataframe_dumper_factory(
-    #         self.cache_dir,
-    #         node_name='manual',
-    #         df_dump_cache=self.dump_cache,
-    #         df_load_cache=self.load_cache,
-    #     )
-    #     yaml.dump(data, Dumper=dumper)
-
     def get_latest_output(self, node_name, node_input=None, time=None):
         if node_input is None:
             matches = sorted(filter(lambda x: x.node_name == node_name, self._cache), key=lambda x: x.time)
@@ -331,26 +315,17 @@ class CacheMixin(PipelineMixin):
     def _fit(self,
              func: NodeCallable,
              node: NodeBase,
-             node_input: Tuple[Tuple[Any], Dict[str, Any]],
-             has_downstream=True):
-        try:
-            node_output = self.get_latest_output(node.name, node_input)
-        except DaskPipesException:
-            node_output = func(node, node_input, has_downstream=has_downstream)
-            if has_downstream:
-                self.add_record(node.name, node_input, node_output)
-                node_output = self.get_latest_output(node.name, node_input)
-        return node_output
+             node_input: Tuple[Tuple[Any], Dict[str, Any]]):
+        return func(node, node_input)
 
     def _transform(self,
                    func: NodeCallable,
                    node: NodeBase,
-                   node_input: Tuple[Tuple[Any], Dict[str, Any]],
-                   has_downstream=True):
+                   node_input: Tuple[Tuple[Any], Dict[str, Any]]):
         try:
             node_output = self.get_latest_output(node.name, node_input)
         except DaskPipesException:
-            node_output = func(node, node_input, has_downstream=has_downstream)
+            node_output = func(node, node_input)
             self.add_record(node.name, node_input, node_output)
             node_output = self.get_latest_output(node.name, node_input)
         return node_output
