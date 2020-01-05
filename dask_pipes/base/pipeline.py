@@ -4,23 +4,58 @@ from typing import List, Optional, Tuple, Any, Dict
 from sklearn.base import BaseEstimator, TransformerMixin
 from collections import defaultdict
 import inspect
+from dask_pipes.utils import replace_signature
+from types import MethodType
 
-from dask_pipes.utils import (get_arguments_description,
-                              get_return_description,
-                              ReturnDescription,
-                              assert_subclass)
-from dask_pipes.base._pipeline_utils import (PipelineInput,
-                                             PipelineOutput,
-                                             get_input_signature,
-                                             set_fit_signature,
-                                             set_transform_signature,
-                                             reset_transform_signature,
-                                             reset_fit_signature,
-                                             getcallargs_inverse,
-                                             validate_fit_transform)
+from dask_pipes.utils import (
+    get_arguments_description,
+    get_return_description,
+    ReturnDescription,
+    assert_subclass,
+)
 
-__all__ = ['PipelineMeta', 'PipelineBase', 'NodeBaseMeta', 'NodeBase', 'NodeSlot', 'NodeConnection',
-           'getcallargs_inverse', 'PipelineMixin', 'NodeCallable']
+from dask_pipes.base._pipeline_utils import (
+    PipelineInput,
+    PipelineOutput,
+    get_input_signature,
+    set_fit_signature,
+    set_transform_signature,
+    reset_transform_signature,
+    reset_fit_signature,
+    getcallargs_inverse,
+    validate_fit_transform,
+)
+
+__all__ = [
+    'PipelineMeta',
+    'PipelineBase',
+    'NodeBaseMeta',
+    'NodeBase',
+    'NodeSlot',
+    'NodeConnection',
+    'getcallargs_inverse',
+    'PipelineMixin',
+    'NodeCallable',
+    'as_node',
+]
+
+
+def as_node(estimator, name=None):
+    if callable(estimator):
+        return CallableWrapper(name=name, func=estimator)
+    else:
+        return NodeWrapper(name=name, estimator=estimator)
+
+
+def validate_estimator(estimator):
+    if not hasattr(estimator, 'fit'):
+        raise DaskPipesException("{} must implement fit".format(estimator))
+    if not hasattr(estimator, 'transform'):
+        raise DaskPipesException("{} must implement transform".format(estimator))
+
+
+def is_estimator(estimator):
+    return hasattr(estimator, 'fit') and hasattr(estimator, 'transform')
 
 
 class NodeSlot:
@@ -38,12 +73,23 @@ class NodeSlot:
         :return:
         """
         if isinstance(other, NodeSlot):
+            # Seems like we're piping output of current node slot to another node slot
             self.node.set_downstream(other.node, upstream_slot=self.slot, downstream_slot=other.slot)
             return other.node
         elif isinstance(other, NodeBase):
+            # Seems like we're piping output of current node slot to another node
             self.node.set_downstream(other, upstream_slot=self.slot)
             return other
         elif isinstance(other, PipelineBase):
+            # Seems like we're piping output of current node slot to pipeline
+            raise NotImplementedError()
+        elif callable(other) or is_estimator(other):
+            # Seems like we're piping output of current node slot to something callable or estimator
+            other_wrapped = as_node(other)
+            self.node.set_downstream(other_wrapped, upstream_slot=self.slot)
+            return other_wrapped
+        else:
+            # Something else happened
             raise NotImplementedError()
 
     def __lshift__(self, other):
@@ -53,12 +99,22 @@ class NodeSlot:
         :return:
         """
         if isinstance(other, NodeSlot):
+            # Seems like we're piping output of some node slot to current node slot
             self.node.set_upstream(other.node, upstream_slot=other.slot, downstream_slot=self.slot)
             return other.node
         elif isinstance(other, NodeBase):
+            # Seems like we're piping output of some node to current node slot
             self.node.set_upstream(other, downstream_slot=self.slot)
             return other
         elif isinstance(other, PipelineBase):
+            # Seems like we're piping output of pipeline to current node slot
+            raise NotImplementedError()
+        elif callable(other) or is_estimator(other):
+            # Seems like we're piping output of some callable to current node slot
+            other_wrapped = as_node(other)
+            self.node.set_upstream(other_wrapped, downstream_slot=self.slot)
+            return other_wrapped
+        else:
             raise NotImplementedError()
 
 
@@ -161,31 +217,51 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
     def __rshift__(self, other):
         """
         self >> other
+        See also:
+            NodeSlot.__rshift__
+            PipelineBase.__lshift__
         :param other:
         :return:
         """
         if isinstance(other, NodeSlot):
+            # Seems like we're piping output of current node to another node slot
             self.set_downstream(other.node, downstream_slot=other.slot)
             return other.node
         elif isinstance(other, NodeBase):
+            # Seems like we're piping output of current node to another node
             self.set_downstream(other)
             return other
         elif isinstance(other, PipelineBase):
+            # Seems like we're piping output of current node to some pipeline
+            raise NotImplementedError()
+        elif callable(other) or is_estimator(other):
+            other_wrapped = as_node(other)
+            self.set_downstream(other_wrapped)
+            return other_wrapped
+        else:
             raise NotImplementedError()
 
     def __lshift__(self, other):
         """
         self << other
+        See also:
+            NodeSlot.__lshift__
+            PipelineBase.__lshift__
         :param other:
         :return:
         """
         if isinstance(other, NodeSlot):
+            # Seems like we're piping output of some node slot to current node
             self.set_upstream(other.node, upstream_slot=other.slot)
             return other.node
         elif isinstance(other, NodeBase):
+            # Seems like we're piping output of some node to current node
             self.set_upstream(other)
             return other
         elif isinstance(other, PipelineBase):
+            # Seems like we're piping output of some pipeline to current node
+            raise NotImplementedError()
+        else:
             raise NotImplementedError()
 
     @property
@@ -368,6 +444,177 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         return '<{}: {}>'.format(self.__class__.__name__, self.name)
 
 
+class NodeSignatureReplaceBase(NodeBase):
+
+    def _set_fit_signature(self, sign: inspect.Signature, doc=None):
+        """
+        Set fit signature of wrapped estimator
+        :param sign:
+        :param doc:
+        :return:
+        """
+        self.fit = MethodType(replace_signature(self.__class__.fit, sign, doc=doc), self)
+
+    def _set_transform_signature(self, sign: inspect.Signature, doc=None):
+        """
+        Set transform signature of  wrapped estimator
+        :param sign:
+        :param doc:
+        :return:
+        """
+        self.transform = MethodType(replace_signature(self.__class__.transform, sign, doc=doc), self)
+
+    def _reset_fit_signature(self):
+        """
+        When estimator is removed, reset fit signature and documentation string to original
+        :return:
+        """
+        self.fit = MethodType(self.__class__.fit, self)
+        self.fit.__doc__ = self.__class__.fit.__doc__
+
+    def _reset_transform_signature(self):
+        """
+        When estimator is removed, reset transform signature and documentation string to original
+        :return:
+        """
+        self.transform = MethodType(self.__class__.transform, self)
+        self.transform.__doc__ = self.__class__.transform.__doc__
+
+    def fit(self, *args, **kwargs):
+        raise NotImplementedError()
+
+    def transform(self, *args, **kwargs):
+        raise NotImplementedError()
+
+
+class CallableWrapper(NodeSignatureReplaceBase):
+
+    def __init__(self, name=None, func=None):
+        super().__init__(name)
+        self._func = None
+        self.func = func
+
+    def get_default_name(self):
+        try:
+            return self.func.__name__
+        except DaskPipesException:
+            return self.__class__.__name__
+
+    @property
+    def func(self):
+        if not self._func:
+            raise DaskPipesException("{} does not have assigned function".format(self))
+        return self._func
+
+    @func.setter
+    def func(self, func):
+        if func is not None:
+            self_parameter = list(inspect.signature(CallableWrapper.fit).parameters.values())[0]
+            sign = inspect.signature(func)
+            fit_sign = inspect.Signature(
+                parameters=[self_parameter] + list(sign.parameters.values()),
+                return_annotation=CallableWrapper
+            )
+            transform_sign = inspect.Signature(
+                parameters=[self_parameter] + list(sign.parameters.values()),
+                return_annotation=sign.return_annotation
+            )
+            self._set_fit_signature(fit_sign)
+            self._set_transform_signature(transform_sign, doc=func.__doc__)
+            self.__doc__ = func.__doc__
+        else:
+            self._reset_fit_signature()
+            self._reset_transform_signature()
+        self._func = func
+
+    def fit(self, *args, **kwargs):
+        """
+        Callable is used only as transform without any persistent functions,
+        so this method does not do anything
+        :param args:
+        :param kwargs:
+        :return:
+        """
+        pass
+
+    def transform(self, *args, **kwargs):
+        return self.func(*args, **kwargs)
+
+
+class NodeWrapper(NodeSignatureReplaceBase):
+    """
+    Wraps BaseEstimator for use in pipeline
+    """
+
+    def __init__(self, name=None, estimator=None):
+        super().__init__(name)
+        self._estimator = None
+        self.estimator = estimator
+
+    def get_default_name(self):
+        try:
+            return self.estimator.__class__.__name__
+        except DaskPipesException:
+            return self.__class__.__name__
+
+    @property
+    def estimator(self):
+        if not self._estimator:
+            raise DaskPipesException("{} does not have assigned estimator".format(self))
+        return self._estimator
+
+    @estimator.setter
+    def estimator(self, estimator):
+        if estimator is not None:
+
+            try:
+                validate_estimator(estimator)
+            except DaskPipesException as ex:
+                raise DaskPipesException("Cannot wrap {}, reason: {}".format(estimator, str(ex)))
+
+            fit_sign = inspect.signature(estimator.fit.__func__)
+            fit_sign = inspect.Signature(
+                parameters=list(fit_sign.parameters.values()),
+                return_annotation=NodeWrapper
+            )
+            self._set_fit_signature(fit_sign, doc=estimator.fit.__doc__)
+            self._set_transform_signature(inspect.signature(estimator.transform.__func__),
+                                          doc=estimator.transform.__doc__)
+            self.__doc__ = estimator.__doc__
+        else:
+            # noinspection PyTypeChecker
+            self.__doc__ = self.__class__.__doc__
+            self._reset_transform_signature()
+            self._reset_fit_signature()
+        self._estimator = estimator
+
+    def __repr__(self):
+        if self._estimator is None:
+            return '<{}: {}>'.format(self.__class__.__name__, self.name)
+        return '<{}({}): {}>'.format(self.__class__.__name__, self.estimator, self.name)
+
+    def fit(self, *args, **kwargs):
+        """
+        Call fit of wrapped estimator with specific args
+        Signature of this method is overwritten once estimator property is set
+        :param args:
+        :param kwargs:
+        :return:
+        """
+        self.estimator.fit(*args, **kwargs)
+        return self
+
+    def transform(self, *args, **kwargs):
+        """
+        Call transform of wrapped estimator with specific args
+        Signature of this method if overwritten once estimator property is set
+        :param args:
+        :param kwargs:
+        :return:
+        """
+        return self.estimator.transform(*args, **kwargs)
+
+
 class DummyNode(NodeBase):
 
     def __init__(self, name=None):
@@ -442,9 +689,6 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
         self.node_dict = dict()
 
-        # For naming unnamed nodes
-        self.node_name_counter = 0
-
         self._param_downstream_mapping: Optional[Dict[str, List[Tuple[Any, str]]]] = None
 
         if mixins is None:
@@ -454,9 +698,14 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
     @staticmethod
     def _get_default_node_name(node, counter=None):
+        if hasattr(node, 'get_default_name'):
+            default_name = node.get_default_name()
+        else:
+            default_name = node.__class__.__name__
+
         if counter is None or counter == 0:
-            return '{}'.format(node.__class__.__name__.lower())
-        return '{}{}'.format(node.__class__.__name__.lower(), counter)
+            return '{}'.format(default_name)
+        return '{}{}'.format(default_name, counter)
 
     def __rshift__(self, other):
         """
@@ -465,11 +714,21 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         :return:
         """
         if isinstance(other, NodeSlot):
+            # Seems like we're trying to pipe input of current pipeline to some node slot
             self.set_input(other.node, name=other.slot, downstream_slot=other.slot)
             return other.node
         elif issubclass(other.__class__, NodeBase):
+            # Seems like we're trying to pipe input of current pipeline to some node
             self.set_input(other)
             return other
+        elif callable(other) or is_estimator(other):
+            # Seems like we're trying to pipe input of current pipeline to some callable or estimator
+            other_wrapped = as_node(other)
+            self.set_input(other_wrapped)
+            return other_wrapped
+        elif isinstance(other, PipelineBase):
+            # Seems like we're trying to pipe input of current pipeline to another pipeline
+            raise NotImplementedError()
         else:
             raise NotImplementedError(other.__class__.__name__)
 
@@ -498,10 +757,10 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         :return:
         """
         if node.name is None:
-            while PipelineBase._get_default_node_name(node, self.node_name_counter) in self.node_dict:
-                self.node_name_counter += 1
-            node.name = PipelineBase._get_default_node_name(node, self.node_name_counter)
-            self.node_name_counter += 1
+            node_name_counter = 0
+            while PipelineBase._get_default_node_name(node, node_name_counter) in self.node_dict:
+                node_name_counter += 1
+            node.name = PipelineBase._get_default_node_name(node, node_name_counter)
         if node.name in self.node_dict:
             if self.node_dict[node.name] is not node:
                 raise DaskPipesException("Duplicate name for node {}".format(node))
@@ -639,7 +898,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
         node_inputs = {i.name: i for i in node.inputs}
         if len(node_inputs) == 0:
-            raise DaskPipesException("{} does not have any inputs")
+            raise DaskPipesException("{} does not have any inputs".format(node))
 
         if downstream_slot is None:
             if name is not None and len(node_inputs) > 1:
@@ -780,7 +1039,11 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         # Doing this, because one variadic can have different names
         rv = {(k if k not in var_pos else '*') if k not in var_key else '**': v for k, v in rv.items()}
 
-        node_arguments: Dict[str, Dict[str, Any]] = {node.name: dict() for node in self.vertices}
+        node_arguments: Dict[str, Dict[str, Any]] = dict()
+        for node in self.vertices:
+            if not isinstance(node, NodeBase):
+                raise DaskPipesException("Pipeline must contain only {}".format(NodeBase.__name__))
+            node_arguments[node.name] = dict()
 
         # Convert pipeline arguments to node arguments
         for inp in self._inputs:

@@ -23,6 +23,13 @@ RETURN_UNNAMED = 'result'
 
 
 def replace_signature(func, sign, doc=None):
+    """
+    Return wrapped function 'func' with specific signature 'sign' and doc string 'doc'
+    :param func: Function to wrap
+    :param sign: Signature to use
+    :param doc: Doc string to use
+    :return:
+    """
     def wrapped(*args, **kwargs):
         return func(*args, **kwargs)
 

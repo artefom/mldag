@@ -1,4 +1,5 @@
 from typing import Any, Dict, Tuple, List, Union
+import types
 from collections import namedtuple
 import yaml
 import pandas as pd
@@ -35,38 +36,85 @@ def path_from_uri(uri):
     return os.path.abspath(os.path.join(p.netloc, unquote(p.path)))
 
 
-def hash_class_code(cls, depth=2, cur_depth=0, class_hash=None):
+_builtins = [int, float, complex, str, tuple, list, bytes,
+             bytearray, property, memoryview, set, frozenset, type,
+             type(None)]
+_builtins += [getattr(types, i) for i in types.__all__ if isinstance(getattr(types, i), type)]
+_builtins = set(_builtins)
+
+
+def hash_class_code(cls, depth=2, cur_depth=0, class_hash=None):  # noqa: C901
+    """
+    Hash code for specific class or object
+    If object is passed, also considers sub-classes used by instance
+
+    If class is defined in file, uses file class name, file name and modified timestamp for hash
+    If class defined at runtime (including jupyter notebooks) uses .__code__ to hash all methods of class
+    :param cls: class or instance of class to get code hash
+    :param depth: Recursion depth. if instance is passed, also hash classes used by this instance recursively.
+    :param cur_depth: Used in recurrent calls
+    :param class_hash: hash object to update or None to create new one
+    :return:
+    """
     class_hash = class_hash or hashlib.sha256()
 
+    # First, try hashing by class name, file name and file modified timestamp
     try:
-        mtime = os.path.getmtime(inspect.getfile(cls))
+        if isinstance(cls, type) or callable(cls):
+            fname = inspect.getfile(cls)
+            mtime = os.path.getmtime(fname)
+            class_name = cls.__name__
+        else:
+            fname = inspect.getfile(cls.__class__)
+            mtime = os.path.getmtime(fname)
+            class_name = cls.__class__.__name__
         class_hash.update(str(mtime).encode('utf-8'))
-        return class_hash.hexdigest()
-    except TypeError:
+        class_hash.update(fname.encode('utf-8'))
+        class_hash.update(class_name)
+        return base64.b64encode(class_hash.digest()).decode('ascii')
+    except (TypeError, FileNotFoundError):
         pass
+
+    def hash_code(f):
+        try:
+            class_hash.update(f.__code__.co_code)
+            for v in f.__code__.co_consts:
+                class_hash.update(str(v).encode('utf-8'))
+            return True
+        except AttributeError:
+            return False
 
     def hash_dict(d):
         for k, v in d.items():
-            try:
-                class_hash.update(v.__code__.co_code)
-                for v in v.__code__.co_consts:
+            if not hash_code(v) and k[:2] != '__':
+                val_str = str(v)
+                if '0x' not in val_str:  # Do not hash any pointers
                     class_hash.update(str(v).encode('utf-8'))
-                continue
-            except AttributeError:
-                pass
-            if k[:2] != '__':
-                class_hash.update(str(v).encode('utf-8'))
 
-    if isinstance(cls, type):
-        hash_dict(cls.__dict__)
-    else:
+    if hasattr(cls, '__code__'):
+        if cls != types.FunctionType:  # noqa: E721
+            hash_code(cls)
+    elif isinstance(cls, type):
+        # Getting hash of class
+        if cls not in _builtins:
+            hash_dict(cls.__dict__)
+    elif isinstance(cls, property):
+        hash_code(cls.getter)
+        hash_code(cls.setter)
+        hash_code(cls.deleter)
+    elif cls.__class__ not in _builtins:
+        # Step1 - hash class of instance
         hash_dict(cls.__class__.__dict__)
         # Find classes used by instance of object and hash them too
         if cur_depth < depth - 1:
             sub_classes = set()
             for k, v in cls.__dict__.items():
-                if hasattr(v, '__dict__'):
-                    sub_classes.add(v.__class__)
+                if callable(v):
+                    sub_classes.add(v)
+                elif hasattr(v, '__dict__') and len(v.__dict__) > 0:
+                    sub_cls = v.__class__
+                    if sub_cls not in _builtins:
+                        sub_classes.add(sub_cls)
             sub_class_hashes = set()
             for c in sub_classes:
                 sub_class_hashes.add(hash_class_code(c, depth=depth, cur_depth=cur_depth + 1))
@@ -82,6 +130,9 @@ FIT_RUN_ID_CACHE_ENTRY = 'fit_run_id'
 
 
 class DataFrameLoader(yaml.SafeLoader):
+    """
+    Overrides yaml SafeLoader and dumps all dataframes to specific directory, serializing just links to them in yaml
+    """
 
     def __init__(self,
                  *args,
@@ -170,6 +221,9 @@ DataFrameLoader.add_constructor('tag:yaml.org,2002:pandas.DataFrame',
 
 
 class DataFrameDumper(yaml.SafeDumper):
+    """
+    Overrides yaml.SafeDumper to use links to dataframes created by DataFrameLoader to load dataframes
+    """
 
     def __init__(self,
                  *args,
@@ -272,13 +326,19 @@ def dataframe_dumper_factory(directory, node_name=None, run_name=None, df_dump_c
 NodeFitCache = namedtuple('NodeFitCache', ['id', 'run_id', 'node_name',
                                            'time', 'node_input', 'code_hash'])
 NodeCache = namedtuple('NodeCache', ['id', 'run_id', 'fit_run_id', 'node_name',
-                                     'time', 'node_input', 'node_output', 'code_hash'])
+                                     'time', 'node_input', 'node_output'])
 CacheLoadHistory = namedtuple('CacheLoadHistory', ['id', 'run_id', 'node_name', 'time', 'cache_id'])
 
 
 class CacheMixin(PipelineMixin):
 
-    def __init__(self, cache_dir, recover_categories=True, verbose=True):
+    def __init__(self,
+                 cache_dir,
+                 recover_categories=True,
+                 verbose=True,
+                 rerun_fit=False,
+                 record_code_hash=True,
+                 ):
         super().__init__()
         self.cache_dir = os.path.abspath(cache_dir)
         self.recover_categories = recover_categories
@@ -302,6 +362,9 @@ class CacheMixin(PipelineMixin):
         self._df_load_cache = dict()
 
         self.verbose = verbose
+
+        self.rerun_fit = rerun_fit
+        self.record_code_hash = record_code_hash
 
     def __str__(self):
         return "<CacheMixin {}>".format('./' + os.path.relpath(self.cache_dir, '.'))
@@ -339,12 +402,28 @@ class CacheMixin(PipelineMixin):
         return yaml.load(data, Loader=loader)
 
     def get_fit_args(self, node):
-        rv = self._fit_cache[node.name]
+        """
+        Get fit arguments for node
+        :param node:
+        :return:
+        """
+        try:
+            rv = self._fit_cache[node.name]
+        except KeyError:
+            raise DaskPipesException("No fit cache for {}".format(node.name))
         if node._meta['cache'].get(FIT_RUN_ID_CACHE_ENTRY) != rv.run_id:
             raise DaskPipesException("Fit cache is invalid, %s changed" % FIT_RUN_ID_CACHE_ENTRY)
-        return rv.node_input
+        return rv.node_input, rv.code_hash
 
     def add_fit_record(self, run_id: str, node: NodeBase, node_input: Any, time=None):
+        """
+        Record fit operation
+        :param run_id: run_id to understand when run was changed
+        :param node: Node to get name from and code hash
+        :param node_input: Input for which fit was performed
+        :param time: time of fit operation or None (default) for current os time
+        :return:
+        """
         node_input = self.dump(node_input, node_name=node.name)
         rec = NodeFitCache(
             id=self._fit_cache_id_counter,
@@ -352,13 +431,13 @@ class CacheMixin(PipelineMixin):
             node_name=node.name,
             time=time or datetime.now(),
             node_input=node_input,
-            code_hash=hash_class_code(node)
+            code_hash=hash_class_code(node) if self.record_code_hash else None,
         )
         self._fit_cache_id_counter += 1
         # Make cache records
         self._fit_cache[node.name] = rec
 
-    def add_record(self, run_id: str, fit_run_id: str, node: NodeBase, node_input: Any, node_output: Any, time=None):
+    def add_record(self, run_id: str, fit_run_id: str, node_name: str, node_input: Any, node_output: Any, time=None):
         """
         Dump node_input and node_output to yaml and save
         :param run_id: For loggins purposes
@@ -369,24 +448,23 @@ class CacheMixin(PipelineMixin):
         :param time:
         :return:
         """
-        node_input = self.dump(node_input, node_name=node.name)
-        node_output = self.dump(node_output, node_name=node.name)
+        node_input = self.dump(node_input, node_name=node_name)
+        node_output = self.dump(node_output, node_name=node_name)
 
         rec = NodeCache(
             id=self._cache_id_counter,
             run_id=run_id,
             fit_run_id=fit_run_id,
-            node_name=node.name,
+            node_name=node_name,
             time=time or datetime.now(),
             node_input=node_input,
             node_output=node_output,
-            code_hash=hash_class_code(node),
         )
         self._cache_id_counter += 1
 
         # Make cache records
         self._cache.append(rec)
-        self._latest_cache_by_input[(node.name, node_input)] = rec
+        self._latest_cache_by_input[(node_name, node_input)] = rec
 
     def get_latest_output(self,
                           node_name: str,
@@ -400,10 +478,12 @@ class CacheMixin(PipelineMixin):
                 raise DaskPipesException("Cache for node {} does not exist".format(node_name))
             return self.load(matches[-1].node_output)
         orig_input = self.dump(node_input, node_name=node_name)
-        if (node_name, orig_input) not in self._latest_cache_by_input:
+
+        try:
+            node_cache: NodeCache = self._latest_cache_by_input[(node_name, orig_input)]
+        except KeyError:
             raise DaskPipesException("Cache for node %s and specific input does not exist" % node_name)
 
-        node_cache: NodeCache = self._latest_cache_by_input[(node_name, orig_input)]
         if node_cache.fit_run_id != fit_run_id:
             raise DaskPipesException("Cached data fit_run_id does not match current fit_run_id")
 
@@ -426,15 +506,24 @@ class CacheMixin(PipelineMixin):
              func: NodeCallable,
              node: NodeBase,
              node_input: Tuple[Tuple[Any], Dict[str, Any]]):
+
+        if not self.rerun_fit \
+                and node._meta['cache'].get(FIT_RUN_ID_CACHE_ENTRY) is None \
+                and node.name in self._fit_cache:
+            node._meta['cache'][FIT_RUN_ID_CACHE_ENTRY] = self._fit_cache[node.name].run_id
+
         cur_input = self.dump(node_input, node_name=node.name)
+        cur_code_hash = hash_class_code(node) if self.record_code_hash else None
         try:
-            expected_input = self.get_fit_args(node)
-            if cur_input == expected_input:
+            expected_input, expected_hash = self.get_fit_args(node)
+            if cur_input == expected_input and (cur_code_hash is None or cur_code_hash == expected_hash):
                 if self.verbose:
-                    logger.info("Skipping fit for {}".format(node.name))
+                    logger.warning("Skipping fit for {}".format(node.name))
                 return
-        except (KeyError, DaskPipesException):
+        except DaskPipesException:
             pass
+
+        # check if we have transform output for this specific
         node._meta['cache'][FIT_RUN_ID_CACHE_ENTRY] = run.run_id
         func(run, node, node_input)
         self.add_fit_record(run.run_id, node, node_input)
@@ -451,7 +540,7 @@ class CacheMixin(PipelineMixin):
                 node_input,
                 run_id=run.run_id,
             )
-            logger.info("Loaded cache for {}".format(node.name))
+            logger.warning("Loaded cache for {}".format(node.name))
             return node_output
         except (DaskPipesException, ConstructorError) as ex:
             if self.verbose:
@@ -460,7 +549,7 @@ class CacheMixin(PipelineMixin):
             self.add_record(
                 run.run_id,
                 node._meta['cache'].get(FIT_RUN_ID_CACHE_ENTRY),
-                node,
+                node.name,
                 node_input,
                 node_output,
             )
