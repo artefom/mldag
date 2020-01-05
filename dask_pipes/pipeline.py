@@ -270,13 +270,13 @@ class PipelineRun:
 
                 # Fit, transform node
                 if compute_fit:
-                    fit(node, node_input)
+                    fit(self, node, node_input)
                 if leaf_node and not transform_leaf_nodes:
                     continue
 
                 # Compute results if node has something downstream
                 # or we explicitly need to compute unused outputs
-                node_result = transform(node, node_input)
+                node_result = transform(self, node, node_input)
                 self.outputs[node.name] = node_result
                 self._process_node_result(node, node_result)
 
@@ -347,10 +347,10 @@ class Pipeline(PipelineBase):
 
         run_id = run_id or str(uuid4())
 
-        def transform_func(node, node_input):
+        def transform_func(run, node, node_input):
             return self._transform(node, node_input)
 
-        def fit_func(node, node_input):
+        def fit_func(run, node, node_input):
             return self._fit(node, node_input)
 
         for mixin in self.mixins:
@@ -387,10 +387,10 @@ class Pipeline(PipelineBase):
 
         run_id = run_id or str(uuid4())
 
-        def transform_func(node, node_input):
+        def transform_func(run, node, node_input):
             return self._transform(node, node_input)
 
-        def fit_func(node, node_input):
+        def fit_func(run, node, node_input):
             return self._fit(node, node_input)
 
         for mixin in self.mixins:

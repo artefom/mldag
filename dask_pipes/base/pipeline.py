@@ -2,6 +2,7 @@ from dask_pipes.base.graph import Graph, VertexBase, EdgeBase
 from dask_pipes.exceptions import DaskPipesException
 from typing import List, Optional, Tuple, Any, Dict
 from sklearn.base import BaseEstimator, TransformerMixin
+from collections import defaultdict
 import inspect
 
 from dask_pipes.utils import (get_arguments_description,
@@ -146,6 +147,7 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
     def __init__(self, name: str = None):
         super().__init__()
         self.name = name
+        self._meta = defaultdict(dict)
 
     def __getitem__(self, slot):
         available_slots = sorted({i.name for i in self.inputs}.union({i.name for i in self.outputs}))
@@ -388,50 +390,46 @@ class PipelineMeta(type):
 
 
 class NodeCallable:
-    def __call__(self, node: NodeBase, node_input: Tuple[Tuple[Any], Dict[str, Any]]) -> Any: ...
+    def __call__(self, run, node: NodeBase, node_input: Tuple[Tuple[Any], Dict[str, Any]]) -> Any: ...
 
 
 class PipelineMixin:
 
     def __init__(self):
-        self._run_id = None
-
-    @property
-    def run_id(self):
-        if self._run_id is None:
-            raise DaskPipesException("Run not started yet")
-        return self._run_id
+        pass
 
     def _fit(self,
+             run,
              func: NodeCallable,
              node: NodeBase,
              node_input: Tuple[Tuple[Any], Dict[str, Any]]):
-        return func(node, node_input)
+        return func(run, node, node_input)
 
     def _transform(self,
+                   run,
                    func: NodeCallable,
                    node: NodeBase,
                    node_input: Tuple[Tuple[Any], Dict[str, Any]],
                    ):
-        return func(node, node_input)
+        return func(run, node, node_input)
 
     def _wrap_fit(self, fit):
-        def func(node, node_input):
-            return self._fit(fit, node, node_input)
+        def func(run, node, node_input):
+            return self._fit(run, fit, node, node_input)
 
         return func
 
     def _wrap_transform(self, transform):
-        def func(node, node_input):
-            return self._transform(transform, node, node_input)
+        def func(run, node, node_input):
+            return self._transform(run, transform, node, node_input)
 
         return func
 
     def _start_run(self, run_id: str):
-        self._run_id = run_id
+        pass
 
     def _end_run(self):
-        self._run_id = None
+        pass
 
 
 class PipelineBase(Graph, metaclass=PipelineMeta):
