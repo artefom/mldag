@@ -143,28 +143,28 @@ def convert_to_list(x):
     return x
 
 
-def dump_yaml(fname, meta: Union[list, dict]):
+def dump_yaml(path, meta: Union[list, dict]):
     meta = convert_to_list(meta)
-    with open(fname, 'w') as f:
+    with open(path, 'w') as f:
         yaml.dump(meta, f)
 
 
-def load_yaml(fname) -> Dict[Any, Any]:
-    with open(fname, 'r') as f:
+def load_yaml(path) -> Dict[Any, Any]:
+    with open(path, 'r') as f:
         rv = yaml.load(f, Loader=yaml.FullLoader)
         if rv is None:
             return dict()
         return rv
 
 
-def read_file(file):
-    ext = os.path.splitext(file)[1].lower()
+def read_file(path):
+    ext = os.path.splitext(path)[1].lower()
     if ext == '.csv':
-        return None, dd.read_csv(file)
+        return None, dd.read_csv(path)
     if ext == '.hdf':
-        rv = dd.read_hdf(file, 'df')
+        rv = dd.read_hdf(path, 'df')
         return rv.index.name, rv
     if ext == '.parquet':
-        rv = dd.read_parquet(file)
+        rv = dd.read_parquet(path)
         return rv.index.name, rv
     raise ValueError("Extension %s not recognized" % ext)
