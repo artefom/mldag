@@ -1,8 +1,9 @@
-from ..exceptions import DaskPipesException
+import inspect
+from collections import namedtuple
 from types import MethodType
 from typing import List, Tuple, Dict, Any, Union, Iterable
-from collections import namedtuple
-import inspect
+
+from ..exceptions import DaskPipesException
 from ..utils import replace_signature
 
 __all__ = ['PipelineInput', 'PipelineOutput', 'get_input_signature',
@@ -69,6 +70,7 @@ class PipelineInput(namedtuple("_PipelineInput", ['name',
     """
     Analog of inspect.Parameter, but includes reference to downstream node and it's slot
     """
+
     def __str__(self):
         arg_param = inspect.Parameter(name=self.name, kind=self.kind, default=self.default,
                                       annotation=self.annotation)

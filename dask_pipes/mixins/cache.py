@@ -1,25 +1,26 @@
-from typing import Any, Dict, Tuple, List, Union, Optional
-import types
-from collections import namedtuple
-import yaml
-import pandas as pd
-import dask.dataframe as dd
-import os
-from uuid import uuid4
-from datetime import datetime
-from urllib.parse import urlparse, unquote
-import pathlib
-from yaml.constructor import ConstructorError
-from dask_pipes.base import PipelineMixin, NodeCallable, NodeBase
-from functools import partial
-from ..exceptions import DaskPipesException
-import weakref
-import inspect
-import hashlib
-import logging
 import base64
+import hashlib
+import inspect
+import logging
+import os
+import pathlib
+import types
+import weakref
+from collections import namedtuple
+from functools import partial
+from typing import Any, Dict, Tuple, Union, Optional
+from urllib.parse import urlparse, unquote
+from uuid import uuid4
+
+import dask.dataframe as dd
+import pandas as pd
 import sqlalchemy as db
 import sqlalchemy.sql.functions as func
+import yaml
+from yaml.constructor import ConstructorError
+
+from dask_pipes.base import PipelineMixin, NodeCallable, NodeBase
+from ..exceptions import DaskPipesException
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ def path_to_uri(path):
 
 def path_from_uri(uri):
     p = urlparse(uri)
-    return os.path.abspath(os.path.join(p.netloc, unquote(p.path)))
+    return os.path.abspath(unquote(p.path))
 
 
 _builtins = [int, float, complex, str, tuple, list, bytes,

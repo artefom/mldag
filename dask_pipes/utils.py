@@ -1,14 +1,14 @@
-from typing import Union, Dict, Any, Callable, List, Type
-from collections import namedtuple
-import yaml
-
+import importlib
+import inspect
 import os
 import shutil
-import numpy as np
-import inspect
+from collections import namedtuple
+from typing import Union, Dict, Any, Callable, List, Type
 
 import dask.dataframe as dd
-import importlib
+import numpy as np
+import yaml
+
 from .exceptions import DaskPipesException
 
 __all__ = ['read_file', 'dump_yaml', 'load_yaml', 'cleanup_empty_dirs', 'try_create_dir', 'import_class', 'is_int',
@@ -30,6 +30,7 @@ def replace_signature(func, sign, doc=None):
     :param doc: Doc string to use
     :return:
     """
+
     def wrapped(*args, **kwargs):
         return func(*args, **kwargs)
 

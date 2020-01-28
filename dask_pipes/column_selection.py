@@ -1,8 +1,8 @@
-import numpy as np
-import pandas as pd
+from typing import List
 
 import dask.dataframe as dd
-from typing import List
+import numpy as np
+import pandas as pd
 
 __all__ = ['Numeric', 'Nullable', 'Categorical', 'Binary']
 

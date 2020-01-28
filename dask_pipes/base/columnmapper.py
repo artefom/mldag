@@ -1,5 +1,6 @@
-import dask.dataframe as dd
 from typing import Dict, Any, List
+
+import dask.dataframe as dd
 
 __all__ = ['ColumnMapperBase']
 

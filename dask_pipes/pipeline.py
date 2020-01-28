@@ -1,12 +1,12 @@
-from dask_pipes.base.graph import VertexWidthFirst
-from dask_pipes.exceptions import DaskPipesException
-from typing import List, Optional, Dict, Any, Iterable
 import inspect
-from dask_pipes.utils import ReturnDescription
-from dask_pipes.base import PipelineBase, NodeBase, NodeConnection, getcallargs_inverse
+from copy import deepcopy
+from typing import List, Optional, Dict, Any, Iterable
 from uuid import uuid4
 
-from copy import deepcopy
+from dask_pipes.base import PipelineBase, NodeBase, NodeConnection, getcallargs_inverse
+from dask_pipes.base.graph import VertexWidthFirst
+from dask_pipes.exceptions import DaskPipesException
+from dask_pipes.utils import ReturnDescription
 
 __all__ = ['Pipeline']
 

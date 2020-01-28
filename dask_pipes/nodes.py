@@ -1,10 +1,12 @@
-from dask_pipes.base import NodeBase
-from dask_pipes.exceptions import DaskPipesException
-import pandas as pd
+from typing import Union
+
 import dask.dataframe as dd
 import numpy as np
+import pandas as pd
 import pandas.api.types
-from typing import Union
+
+from dask_pipes.base import NodeBase
+from dask_pipes.exceptions import DaskPipesException
 from .base.pipeline import as_node
 
 __all__ = [

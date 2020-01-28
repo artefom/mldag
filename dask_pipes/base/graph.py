@@ -1,6 +1,7 @@
-from ..exceptions import DaskPipesException
-from typing import Optional, List
 import importlib
+from typing import Optional, List
+
+from ..exceptions import DaskPipesException
 from ..utils import assert_subclass
 
 __all__ = ['Graph', 'VertexBase', 'EdgeBase', 'VertexWidthFirst']

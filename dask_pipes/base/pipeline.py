@@ -1,18 +1,9 @@
-from dask_pipes.base.graph import Graph, VertexBase, EdgeBase
-from dask_pipes.exceptions import DaskPipesException
-from typing import List, Optional, Tuple, Any, Dict
-from sklearn.base import BaseEstimator, TransformerMixin
-from collections import defaultdict
 import inspect
-from dask_pipes.utils import replace_signature
+from collections import defaultdict
 from types import MethodType
+from typing import List, Optional, Tuple, Any, Dict
 
-from dask_pipes.utils import (
-    get_arguments_description,
-    get_return_description,
-    ReturnDescription,
-    assert_subclass,
-)
+from sklearn.base import BaseEstimator, TransformerMixin
 
 from dask_pipes.base._pipeline_utils import (
     PipelineInput,
@@ -25,6 +16,15 @@ from dask_pipes.base._pipeline_utils import (
     getcallargs_inverse,
     validate_fit_transform,
 )
+from dask_pipes.base.graph import Graph, VertexBase, EdgeBase
+from dask_pipes.exceptions import DaskPipesException
+from dask_pipes.utils import (
+    get_arguments_description,
+    get_return_description,
+    ReturnDescription,
+    assert_subclass,
+)
+from dask_pipes.utils import replace_signature
 
 __all__ = [
     'PipelineMeta',
