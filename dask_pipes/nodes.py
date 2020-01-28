@@ -132,7 +132,7 @@ class AddNaCategory(NodeBase):
             col = X[col_name]
             if pd.api.types.is_categorical(col):
                 # Checking if column is nullable
-                if col.isna().sum() == 0:
+                if col.isna().sum().compute() == 0:
                     pass
                 try:
                     if not col.cat.known:
