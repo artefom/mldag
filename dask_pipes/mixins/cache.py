@@ -5,11 +5,12 @@ import logging
 import os
 import pathlib
 import types
+import urllib
 import weakref
 from collections import namedtuple
 from functools import partial
 from typing import Any, Dict, Tuple, Union, Optional
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import dask.dataframe as dd
@@ -38,9 +39,24 @@ def path_to_uri(path):
     return pathlib.Path(path).as_uri()
 
 
-def path_from_uri(uri):
-    p = urlparse(uri)
-    return os.path.abspath(unquote(p.path))
+def path_from_uri(file_uri):
+    """
+    This function returns a str object for the supplied file URI.
+    :param str file_uri: The file URI ...
+    :returns: the absolute path str object
+    """
+    path_class = pathlib.PurePath
+    windows_path = isinstance(path_class(), pathlib.PureWindowsPath)
+    file_uri_parsed = urllib.parse.urlparse(file_uri)
+    file_uri_path_unquoted = urllib.parse.unquote(file_uri_parsed.path)
+    if windows_path and file_uri_path_unquoted.startswith("/"):
+        result = path_class(file_uri_path_unquoted[1:])
+    else:
+        result = path_class(file_uri_path_unquoted)
+    if result.is_absolute() == False:
+        raise ValueError("Invalid file uri {} : resulting path {} not absolute".format(
+            file_uri, result))
+    return str(result)
 
 
 _builtins = [int, float, complex, str, tuple, list, bytes,
