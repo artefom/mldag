@@ -6,8 +6,8 @@ import pandas as pd
 import pandas.api.types
 
 from dask_pipes.base import NodeBase
+from dask_pipes.base.pipeline import as_node
 from dask_pipes.exceptions import DaskPipesException
-from .base.pipeline import as_node
 
 __all__ = [
     'RobustCategoriser',

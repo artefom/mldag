@@ -20,7 +20,7 @@ import yaml
 from yaml.constructor import ConstructorError
 
 from dask_pipes.base import PipelineMixin, NodeCallable, NodeBase
-from ..exceptions import DaskPipesException
+from dask_pipes.exceptions import DaskPipesException
 
 logger = logging.getLogger(__name__)
 
