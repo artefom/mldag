@@ -10,13 +10,13 @@ import weakref
 from collections import namedtuple
 from functools import partial
 from typing import Any, Dict, Tuple, Union, Optional
-from urllib.parse import urlparse
 from uuid import uuid4
 
 import dask.dataframe as dd
 import pandas as pd
 import sqlalchemy as db
 import sqlalchemy.sql.functions as func
+import urllib.parse.urlparse
 import yaml
 from yaml.constructor import ConstructorError
 
@@ -53,7 +53,7 @@ def path_from_uri(file_uri):
         result = path_class(file_uri_path_unquoted[1:])
     else:
         result = path_class(file_uri_path_unquoted)
-    if result.is_absolute() == False:
+    if not result.is_absolute():
         raise ValueError("Invalid file uri {} : resulting path {} not absolute".format(
             file_uri, result))
     return str(result)
