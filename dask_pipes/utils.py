@@ -62,7 +62,6 @@ def get_arguments_description(func: Callable) -> List[inspect.Parameter]:
 def get_return_description(func: Callable) -> List[ReturnDescription]:
     func_name = func.__qualname__
 
-    # return_type = func.__annotations__.get('return', object)
     return_type = inspect.signature(func).return_annotation
 
     if isinstance(return_type, tuple) or isinstance(return_type, list):
