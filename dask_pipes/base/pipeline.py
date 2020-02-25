@@ -40,26 +40,58 @@ __all__ = [
 ]
 
 
-def as_node(estimator, name=None):
-    if callable(estimator):
-        return CallableWrapper(name=name, func=estimator)
+def as_node(obj: Any, name=None):
+    """
+    Wrap callable or class instance with 'fit' and 'transform' methods to node, so it can be used in pipeline
+    To add node to pipeline, see PipelineBase.set_input
+
+    this function is called whenever non-node is piped to pipeline with byte-shift operators
+    >>> p = PipelineBase()
+    >>> def foo(X): ...
+    >>> p >> foo  # as_node is called
+
+    :param obj: Object to wrap
+    :param name:
+    :return: EstimatorNode or FunctionNode
+    """
+    if callable(obj):
+        return FunctionNode(name=name, func=obj)
     else:
-        return NodeWrapper(name=name, estimator=estimator)
+        return EstimatorNode(name=name, estimator=obj)
 
 
-def validate_estimator(estimator):
-    if not hasattr(estimator, 'fit'):
-        raise DaskPipesException("{} must implement fit".format(estimator))
-    if not hasattr(estimator, 'transform'):
-        raise DaskPipesException("{} must implement transform".format(estimator))
+def validate_estimator(obj):
+    """
+    Raise DaskPipesException if obj does not have 'fit' and 'transform' methods
+    :param obj: class instance to check
+    :return: None
+    """
+    if not hasattr(obj, 'fit'):
+        raise DaskPipesException("{} must implement fit".format(obj))
+    if not hasattr(obj, 'transform'):
+        raise DaskPipesException("{} must implement transform".format(obj))
 
 
-def is_estimator(estimator):
-    return hasattr(estimator, 'fit') and hasattr(estimator, 'transform')
+def is_estimator(obj):
+    """
+    Check if obj has 'fit' and 'transform' methods
+    :param obj:
+    :return:
+    """
+    return hasattr(obj, 'fit') and hasattr(obj, 'transform')
 
 
 class NodeSlot:
+    """
+    Overloads byte shift to proxy piping to specific slot of parent node
+    calls set_downstream with upstream_slot parameter
+    """
+
     def __init__(self, node, slot: str):
+        """
+        :param node: Node to pipe into (or from)
+        :param slot: Slot to pipe into (or from)
+        """
         if not hasattr(node, 'set_downstream') or not hasattr(node, 'set_upstream'):
             raise DaskPipesException("node {} must implement set_downstream, set_upstream".format(node))
 
@@ -69,7 +101,9 @@ class NodeSlot:
     def __rshift__(self, other):
         """
         self >> other
-        :param other:
+
+        :param other: can be one of NodeSlot, NodeBase, else as_node(other) is called.
+        piping to instance of PipelineBase is not supported
         :return:
         """
         if isinstance(other, NodeSlot):
@@ -83,19 +117,18 @@ class NodeSlot:
         elif isinstance(other, PipelineBase):
             # Seems like we're piping output of current node slot to pipeline
             raise NotImplementedError()
-        elif callable(other) or is_estimator(other):
+        else:
             # Seems like we're piping output of current node slot to something callable or estimator
             other_wrapped = as_node(other)
             self.node.set_downstream(other_wrapped, upstream_slot=self.slot)
             return other_wrapped
-        else:
-            # Something else happened
-            raise NotImplementedError()
 
     def __lshift__(self, other):
         """
         self << other
-        :param other:
+
+        :param other: can be one of NodeSlot, NodeBase, else as_node(other) is called.
+        piping to instance of PipelineBase is not supported
         :return:
         """
         if isinstance(other, NodeSlot):
@@ -109,26 +142,19 @@ class NodeSlot:
         elif isinstance(other, PipelineBase):
             # Seems like we're piping output of pipeline to current node slot
             raise NotImplementedError()
-        elif callable(other) or is_estimator(other):
+        else:
             # Seems like we're piping output of some callable to current node slot
             other_wrapped = as_node(other)
             self.node.set_upstream(other_wrapped, downstream_slot=self.slot)
             return other_wrapped
-        else:
-            raise NotImplementedError()
 
 
 class NodeConnection(EdgeBase):
+    """
+    Edge with additional info about upstream and downstream slot name
+    """
 
     def __init__(self, upstream, downstream, upstream_slot: str, downstream_slot: str):
-        """
-        :param upstream:
-        :type upstream: NodeBase
-        :param downstream:
-        :type downstream: NodeBase
-        :param upstream_slot:
-        :param downstream_slot:
-        """
         super().__init__(upstream, downstream)
         if not isinstance(upstream_slot, str):
             raise DaskPipesException("upstream slot must be str, got {}".format(upstream_slot.__class__.__name__))
@@ -174,6 +200,10 @@ class NodeConnection(EdgeBase):
 
 
 class NodeBaseMeta(type):
+    """
+    Meta-class for validating user-defined nodes
+    User classes are derived from NodeBase
+    """
 
     @staticmethod
     def wrap_fit(func):
@@ -199,13 +229,29 @@ class NodeBaseMeta(type):
 
 
 class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMeta):
+    """
+    Node baseclass, derive from it and overload fit and transform methods
+    """
 
     def __init__(self, name: str = None):
         super().__init__()
         self.name = name
         self._meta = defaultdict(dict)
 
+    def get_default_name(self):
+        """
+        Get user-friendly name of current node if user does not bother specifying names themselves
+        Used when adding node to pipeline and self.name is None, since each node assigned to pipeline must have name
+        :return:
+        """
+        return self.__class__.__name__
+
     def __getitem__(self, slot):
+        """
+        Create child NodeSlot that will support piping to specific slots
+        :param slot:
+        :return:
+        """
         available_slots = sorted({i.name for i in self.inputs}.union({i.name for i in self.outputs}))
 
         if slot not in available_slots:
@@ -217,10 +263,13 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
     def __rshift__(self, other):
         """
         self >> other
+
         See also:
             NodeSlot.__rshift__
             PipelineBase.__lshift__
-        :param other:
+
+        :param other: can be one of NodeSlot, NodeBase, else as_node(other) is called.
+        piping to instance of PipelineBase is not supported
         :return:
         """
         if isinstance(other, NodeSlot):
@@ -234,20 +283,22 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         elif isinstance(other, PipelineBase):
             # Seems like we're piping output of current node to some pipeline
             raise NotImplementedError()
-        elif callable(other) or is_estimator(other):
+        else:
+            # Seems like we may be piping come unknown class instance, function or anything else
             other_wrapped = as_node(other)
             self.set_downstream(other_wrapped)
             return other_wrapped
-        else:
-            raise NotImplementedError()
 
     def __lshift__(self, other):
         """
         self << other
+
         See also:
             NodeSlot.__lshift__
             PipelineBase.__lshift__
-        :param other:
+
+        :param other: can be one of NodeSlot, NodeBase, else as_node(other) is called.
+        piping to instance of PipelineBase is not supported
         :return:
         """
         if isinstance(other, NodeSlot):
@@ -443,9 +494,9 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
 
         return '<{}: {}>'.format(self.__class__.__name__, self.name)
 
-
-class NodeSignatureReplaceBase(NodeBase):
-
+    # =======================================================
+    # Methods for replaceing fit's and transforms signatures
+    # =======================================================
     def _set_fit_signature(self, sign: inspect.Signature, doc=None):
         """
         Set fit signature of wrapped estimator
@@ -480,14 +531,12 @@ class NodeSignatureReplaceBase(NodeBase):
         self.transform = MethodType(self.__class__.transform, self)
         self.transform.__doc__ = self.__class__.transform.__doc__
 
-    def fit(self, *args, **kwargs):
-        raise NotImplementedError()
 
-    def transform(self, *args, **kwargs):
-        raise NotImplementedError()
-
-
-class CallableWrapper(NodeSignatureReplaceBase):
+class FunctionNode(NodeBase):
+    """
+    Wraps custom function for use in pipeline
+    Assumes embedded function is stateless and uses it as a transform method
+    """
 
     def __init__(self, name=None, func=None):
         super().__init__(name)
@@ -509,11 +558,11 @@ class CallableWrapper(NodeSignatureReplaceBase):
     @func.setter
     def func(self, func):
         if func is not None:
-            self_parameter = list(inspect.signature(CallableWrapper.fit).parameters.values())[0]
+            self_parameter = list(inspect.signature(FunctionNode.fit).parameters.values())[0]
             sign = inspect.signature(func)
             fit_sign = inspect.Signature(
                 parameters=[self_parameter] + list(sign.parameters.values()),
-                return_annotation=CallableWrapper
+                return_annotation=FunctionNode
             )
             transform_sign = inspect.Signature(
                 parameters=[self_parameter] + list(sign.parameters.values()),
@@ -541,9 +590,10 @@ class CallableWrapper(NodeSignatureReplaceBase):
         return self.func(*args, **kwargs)
 
 
-class NodeWrapper(NodeSignatureReplaceBase):
+class EstimatorNode(NodeBase):
     """
     Wraps BaseEstimator for use in pipeline
+    Supports fit and transform methods
     """
 
     def __init__(self, name=None, estimator=None):
@@ -575,7 +625,7 @@ class NodeWrapper(NodeSignatureReplaceBase):
             fit_sign = inspect.signature(estimator.fit.__func__)
             fit_sign = inspect.Signature(
                 parameters=list(fit_sign.parameters.values()),
-                return_annotation=NodeWrapper
+                return_annotation=EstimatorNode
             )
             self._set_fit_signature(fit_sign, doc=estimator.fit.__doc__)
             self._set_transform_signature(inspect.signature(estimator.transform.__func__),
@@ -616,6 +666,9 @@ class NodeWrapper(NodeSignatureReplaceBase):
 
 
 class DummyNode(NodeBase):
+    """
+    Dummy node for examples
+    """
 
     def __init__(self, name=None):
         super().__init__(name=name)
@@ -628,6 +681,10 @@ class DummyNode(NodeBase):
 
 
 class PipelineMeta(type):
+    """
+    Obsolete, deprecated, outdated, to be removed, discontinued
+    """
+
     def __new__(mcs, name, bases, attrs):
         """
         Run validations on pipeline's fit and transform signatures
@@ -637,6 +694,10 @@ class PipelineMeta(type):
 
 
 class NodeCallable:
+    """
+    Mock of callable func passed inside pipeline and wrapped
+    """
+
     def __call__(self, run, node: NodeBase, node_input: Tuple[Tuple[Any], Dict[str, Any]]) -> Any: ...
 
 
@@ -698,11 +759,16 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
     @staticmethod
     def _get_default_node_name(node, counter=None):
-        if hasattr(node, 'get_default_name'):
-            default_name = node.get_default_name()
-        else:
-            default_name = node.__class__.__name__
+        """
+        Get default unique user-friendly name for node if user did not bother specifying it themselves
 
+        Uses node.get_default_name + counter to assure uniqueness
+
+        :param node: node to get name for
+        :param counter:
+        :return:
+        """
+        default_name = node.get_default_name()
         if counter is None or counter == 0:
             return '{}'.format(default_name)
         return '{}{}'.format(default_name, counter)
@@ -710,7 +776,8 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
     def __rshift__(self, other):
         """
         self >> other
-        :param other:
+        :param other: can be one of NodeSlot, NodeBase, else as_node(other) is called.
+        piping to instance of PipelineBase is not supported
         :return:
         """
         if isinstance(other, NodeSlot):
@@ -721,21 +788,23 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
             # Seems like we're trying to pipe input of current pipeline to some node
             self.set_input(other)
             return other
-        elif callable(other) or is_estimator(other):
-            # Seems like we're trying to pipe input of current pipeline to some callable or estimator
-            other_wrapped = as_node(other)
-            self.set_input(other_wrapped)
-            return other_wrapped
         elif isinstance(other, PipelineBase):
             # Seems like we're trying to pipe input of current pipeline to another pipeline
             raise NotImplementedError()
         else:
-            raise NotImplementedError(other.__class__.__name__)
+            # Seems like we're trying to pipe input of current pipeline to some callable or estimator
+            other_wrapped = as_node(other)
+            self.set_input(other_wrapped)
+            return other_wrapped
 
     def __lshift__(self, other):
         """
         self << other
-        :param other:
+
+        piping to instance of PipelineBase is not supported.
+        Raises NotImplementedError
+
+        :param other: Any
         :return:
         """
         raise NotImplementedError()
@@ -748,9 +817,11 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         """
         return NodeSlot(self, slot)
 
+    # TODO: rename to add_node
     def add_vertex(self, node: NodeBase, vertex_id=None):
         """
-        Add node to current pipeline
+        Add vertex node to current pipeline
+        To remove vertex (node), use remove_vertex
         :param node: node to add
         :param vertex_id: node's id or None (if None - autoincrement) (used for deserialization from disk)
         :type vertex_id: int
@@ -767,9 +838,11 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         self.node_dict[node.name] = node
         super().add_vertex(node, vertex_id=vertex_id)
 
+    # TODO: Rename to remove_node
     def remove_vertex(self, node: NodeBase) -> VertexBase:
         """
-        Remove node from pipeline
+        Remove vertex node from pipeline
+        To add vertex (node), use add_vertex
         :param node: node to remove (must be in current pipeline)
         :return:
         """
@@ -851,7 +924,10 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
                      upstream_slot: Optional[str] = None,
                      downstream_slot: Optional[str] = None):
         """
-        Set pipeline output
+        Method, used by NodeSlot to allow using Pipeline in byte-shift notation chains node1['X'] >> p['X']
+
+        Not implemented
+
         :param other:
         :param upstream_slot:
         :param downstream_slot:
@@ -863,7 +939,8 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
                        upstream_slot: Optional[str] = None,
                        downstream_slot: Optional[str] = None, ):
         """
-        Set pipeline input
+        Method, used by NodeSlot to allow using Pipeline in byte-shift notation chains p['X'] >> node1['X']
+
         :param other:
         :param upstream_slot:
         :param downstream_slot:
@@ -872,6 +949,16 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         self.set_input(other, name=upstream_slot, downstream_slot=downstream_slot)
 
     def remove_input(self, name):
+        """
+        Remove input by name from pipeline
+        Removes all conections between pipeline input with name 'name' and any nodes
+
+        To remove input piped to specific node, use remove_input_node
+        To add input node, use set_input
+
+        :param name:
+        :return:
+        """
         len_before = len(self._inputs)
         if len_before == 0:
             raise DaskPipesException("{} Does not have any arguments".format(self))
@@ -883,6 +970,10 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
     def remove_input_node(self, node: NodeBase):
         """
         Unset node as pipeline output
+        Removes all connections between node inputs and pipeline inputs
+
+        To add input node, use set_input
+
         :param node: node to unset as output
         :return:
         """
@@ -892,6 +983,35 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         self._update_fit_transform_signatures()
 
     def set_input(self, node: NodeBase, name=None, downstream_slot=None, suffix: Optional[str] = None):  # noqa: C901
+        """
+        Several actions are performed:
+
+        1. Add 'node' to current pipeline
+        2. if 'name' is None, infer it
+        3. add 'name' to pipeline fit and transform signatures
+        4. connect argument 'name' to 'downstream_slot' of 'node'
+
+        How 'name' is inferred: 'downstream_slot'+'suffix'
+        How 'suffix' is inferred: 'node.name'
+
+        !Recursive when downstream_slot is not specified: applied to each input slot of node
+
+        Raises DaskPipesException when name is specified,
+        downstream_slot is not specified, and node has multiple input slots
+
+        Relates:
+        To see list of current pipeline inputs, use property .inputs
+        To remove input, use remove_input or remove_input_node
+
+        Outputs of node are not set. instead, you can get output of all leaf nodes from PipelineRun class
+
+        :param node: Node to set as pipeline input
+        :param name: Optional. Name of input (default: 'downstream_slot'+'suffix' )
+        :param downstream_slot: Optional. Name of node's input slot. (default: applied recursive for each slot)
+        :param suffix: Optional. used for inferring 'name' parameter
+        :return: None
+        """
+
         self.validate_vertex(node)
         # Assign node to current pipeline
         node.graph = self
@@ -967,12 +1087,15 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
                 upstream_slot: Optional[str] = None,
                 downstream_slot: Optional[str] = None) -> NodeConnection:
         """
-        General method for connecting tto nodes
+        General method for connecting two nodes
         Creates directed connection with upstream and downstream slots
 
         if connection between slots was already made, raises DaskPipesException
         if downstream_slot already has piped input, raises DaskPipesException,
         since multiple inputs for one slot are not allowed
+
+        used in _set_relationship and therefore in all
+        set_upstream, set_downstream methods of all nodes
 
         :param upstream: node to set upstream
         :param downstream: node to set downstream
@@ -1012,6 +1135,10 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
     def _parse_arguments(self, *args, **kwargs) -> Dict[str, Dict[str, Any]]:
         """
         Parse fit arguments based on current pipeline inputs and return dictionary of node inputs.
+
+        This function is needed, since pipeline's fit and transform signatures are dynamic
+        and we need to mimic python behaviour (call inspect.getcallargs on function with specific arguments)
+
         If argument has a default value and not provided,
         result dictionary will contain default value for that argument
         :param fit_params:
@@ -1067,7 +1194,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
         return node_arguments
 
-    # Change signature of functions
+    # TODO: rename method
     def add_edge(self, node_connection: NodeConnection, edge_id=None) -> NodeConnection:
         """
         Add NodeConnection to current pipeline
@@ -1079,15 +1206,16 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         super().add_edge(node_connection, edge_id=edge_id)
         return node_connection
 
+    # TODO: Programmatically update parameters docstring
     def fit(self, *args, **kwargs):
         """
-        Main method for fitting pipeline.
         Sequentially calls fit and transform in width-first order
-        :param args: pipeline positional input to pass to input nodes
-        :param kwargs: pipeline key-word input to  pass to input nodes
-        :return: self
         """
         raise NotImplementedError()
 
+    # TODO: Programmatically update parameters docstring
     def transform(self, *args, **kwargs):
+        """
+        Sequentially calls transform in width-first order
+        """
         raise NotImplementedError()

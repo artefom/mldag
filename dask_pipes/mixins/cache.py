@@ -618,6 +618,7 @@ class DataFrameDumper(yaml.SafeDumper):
             'mtime': os.path.getmtime(path),
         }
 
+    # TODO: Write doc, mention caching mechanism and why should we associate files
     @staticmethod
     def associate(df_dump_cache, path, df: Union[pd.DataFrame, dd.DataFrame]):
         dump_data = DataFrameDumper._create_dump_data(path)
@@ -749,6 +750,7 @@ class CacheMixin(PipelineMixin):
     def cache(self):
         return self.storage.all_transforms()
 
+    # Todo: write doc, mention why  we should  associate files
     def associate(self, path, df):
         path = os.path.abspath(path)
         return DataFrameDumper.associate(self._df_dump_cache, path, df)
