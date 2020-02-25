@@ -16,7 +16,7 @@ import dask.dataframe as dd
 import pandas as pd
 import sqlalchemy as db
 import sqlalchemy.sql.functions as func
-import urllib.parse.urlparse
+import urllib.parse
 import yaml
 from yaml.constructor import ConstructorError
 
