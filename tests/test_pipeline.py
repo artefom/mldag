@@ -1,9 +1,10 @@
-import pytest
 import io
 from datetime import datetime, timedelta
-import pandas as pd
-import dask.dataframe as dd
 from typing import Optional
+
+import dask.dataframe as dd
+import pandas as pd
+
 import dask_pipes as dp
 
 TEST_DS: Optional[pd.DataFrame] = None
@@ -38,6 +39,9 @@ def test_pipeline():
     p.mixins = [dp.mixins.CacheMixin('tmp')]
     f_run = p.fit(ds)
     t_run = p.transform(ds)
+
+    assert p.input_names == ['X_RobustCategoriser', 'y_RobustCategoriser', 'run_id']
+    assert p.output_names == ['normalized']
 
 
 if __name__ == '__main__':

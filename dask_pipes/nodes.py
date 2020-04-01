@@ -3,7 +3,7 @@ from typing import Union
 import dask.dataframe as dd
 import numpy as np
 import pandas as pd
-import pandas.api.types
+from dask.dataframe.core import Scalar
 
 from dask_pipes.base import NodeBase
 from dask_pipes.base.pipeline import as_node
@@ -67,11 +67,14 @@ class RobustCategoriser(NodeBase):
             if new_coverage >= self.min_coverage:
                 coverage = new_coverage
                 categories = new_categories
-                break
+                if len(new_categories)+1 < len(val_counts):
+                    break
 
         return categories, coverage
 
     def fit(self, X, y=None):
+        assert y is None
+
         self.columns_ = self.columns
         self.frequent_vals_ = dict()
         self.drop_columns_ = list()
@@ -96,6 +99,8 @@ class RobustCategoriser(NodeBase):
         return self
 
     def transform(self, X, y=None):
+        assert y is None
+
         def get_col_transformer(categories, repl_val):
             frequent_val_set = set(categories)
 
@@ -115,7 +120,7 @@ class RobustCategoriser(NodeBase):
                 X[col_name] = X[col_name].astype(cat_type)
             elif col_name in self.drop_columns_:
                 if self.drop:
-                    X.drop(col_name, axis=1)
+                    X = X.drop(col_name, axis=1)
         return X
 
 
@@ -129,12 +134,17 @@ class AddNaCategory(NodeBase):
         self.categories_ = None
 
     def fit(self, X, y=None):
+        assert y is None
+
         self.categories_ = dict()
         for col_name in X.columns:
             col = X[col_name]
             if pd.api.types.is_categorical(col):
                 # Checking if column is nullable
-                if col.isna().sum().compute() == 0:
+                num_na = col.isna().sum()
+                if isinstance(num_na, Scalar):
+                    num_na = num_na.compute()
+                if num_na == 0:
                     pass
                 try:
                     if not col.cat.known:
@@ -148,6 +158,8 @@ class AddNaCategory(NodeBase):
         return self
 
     def transform(self, X, y=None):
+        assert y is None
+
         for col_name, dtype in self.categories_.items():
             X[col_name] = X[col_name].astype(dtype)
         return X
@@ -181,6 +193,8 @@ class DateProcessor(NodeBase):
             return False
 
     def fit(self, X, y=None):
+        assert y is None
+
         retro_date_mapping = self.retro_date_mapping or dict()
         self.timedeltas_ = list()
         self.datetimes_ = list()
@@ -206,6 +220,8 @@ class DateProcessor(NodeBase):
         return self
 
     def transform(self, X, y=None):
+        assert y is None
+
         def to_seconds(x, **kwargs):
             return x.total_seconds() if not pd.isna(x) else None
 
@@ -229,6 +245,8 @@ class AddNaIndicator(NodeBase):
         self.indicator_cols_ = None
 
     def fit(self, X, y=None):
+        assert y is None
+
         self.indicator_cols_ = dict()
         new_cols = set()
         for col_name in X.columns:
@@ -242,6 +260,8 @@ class AddNaIndicator(NodeBase):
         return self
 
     def transform(self, X, y=None):
+        assert y is None
+
         for col_name, na_col_name in self.indicator_cols_.items():
             X[na_col_name] = X[col_name].isna().astype(int)
         return X

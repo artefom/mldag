@@ -1,8 +1,11 @@
 import importlib
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
 
 from dask_pipes.exceptions import DaskPipesException
 from dask_pipes.utils import assert_subclass
+
+if TYPE_CHECKING:
+    import graphviz  # noqa: F401
 
 __all__ = ['Graph', 'VertexBase', 'EdgeBase', 'VertexWidthFirst']
 
@@ -672,3 +675,43 @@ class Graph:
             graph.add_edge(e, edge_id)
 
         return graph
+
+    # ===========================================================
+    # Graphviz visualisation
+    # ===========================================================
+
+    def repr_graphviz_node_name(self, node):
+        """
+        Get representation of node name for graphviz
+        """
+        return str(node._id)
+
+    def graphviz_add_node(self, g, node):
+        """
+        Add node to graphviz graphh
+        :type g: graphviz.Graph
+        """
+        return g.node(self.repr_graphviz_node_name(node))
+
+    def graphviz_add_edge(self, g, edge):
+        """
+        Add edge to graphbiz
+        :type g: graphviz.Graph
+        """
+        return g.edge(self.repr_graphviz_node_name(edge.upstream), self.repr_graphviz_node_name(edge.downstream))
+
+    def show(self):
+        try:
+            from graphviz import Digraph
+        except ImportError:
+            raise ImportError("Graphviz not installed") from None
+
+        g = Digraph('structs')
+
+        for vertex in self.vertices:
+            self.graphviz_add_node(g, vertex)
+
+        for edge in self.edges:
+            self.graphviz_add_edge(g, edge)
+
+        return g

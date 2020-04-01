@@ -1,7 +1,7 @@
 import inspect
 from collections import defaultdict
 from types import MethodType
-from typing import List, Optional, Tuple, Any, Dict
+from typing import List, Optional, Tuple, Any, Dict, TYPE_CHECKING
 
 from sklearn.base import BaseEstimator, TransformerMixin
 
@@ -25,6 +25,9 @@ from dask_pipes.utils import (
     assert_subclass,
 )
 from dask_pipes.utils import replace_signature
+
+if TYPE_CHECKING:
+    import graphviz  # noqa: F401
 
 __all__ = [
     'PipelineMeta',
@@ -108,6 +111,14 @@ class NodeSlot:
         """
         if isinstance(other, NodeSlot):
             # Seems like we're piping output of current node slot to another node slot
+            if issubclass(other.node.__class__, NodeBase):
+                self.node.set_downstream(other.node, upstream_slot=self.slot, downstream_slot=other.slot)
+            elif issubclass(other.node.__class__, PipelineBase):
+                other.node.set_output(other.slot, self.node, upstream_slot=self.slot)
+                return None
+            else:
+                raise NotImplementedError("Unknown node class {}".format(other.node.__class__.__name__))
+
             self.node.set_downstream(other.node, upstream_slot=self.slot, downstream_slot=other.slot)
             return other.node
         elif isinstance(other, NodeBase):
@@ -274,7 +285,13 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         """
         if isinstance(other, NodeSlot):
             # Seems like we're piping output of current node to another node slot
-            self.set_downstream(other.node, downstream_slot=other.slot)
+            if issubclass(other.node.__class__, NodeBase):
+                self.set_downstream(other.node, downstream_slot=other.slot)
+            elif issubclass(other.node.__class__, PipelineBase):
+                other.node.set_output(other.slot, self)
+                return None
+            else:
+                raise NotImplementedError("Unknown node class {}".format(other.node.__class__.__name__))
             return other.node
         elif isinstance(other, NodeBase):
             # Seems like we're piping output of current node to another node
@@ -383,6 +400,12 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
 
     def get_downstream(self):
         return self.graph.get_downstream_edges(self)
+
+    def is_leaf(self) -> bool:
+        """
+        Returns true if vertex has do downstream vertices, else false
+        """
+        return len(self.get_downstream()) == 0
 
     def set_downstream(self, other,
                        upstream_slot: Optional[str] = None,
@@ -746,7 +769,8 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         super().__init__()
 
         # Pipeline inputs. use set_input to add input
-        self._inputs: List[PipelineInput] = list()
+        self.inputs: List[PipelineInput] = list()
+        self.outputs: List[PipelineOutput] = list()
 
         self.node_dict = dict()
 
@@ -860,34 +884,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         return super().remove_vertex(node)
 
     @property
-    def _outputs(self) -> List[PipelineOutput]:
-        """
-        Get detailed info about pipeline outputs
-        :return: list out named tuples defining unused nodes' outputs. output of .transform() method
-        """
-        outputs = []
-
-        for v_id, vertex in self._vertices.items():
-
-            vertex: NodeBase
-
-            v_outputs = {i.name for i in vertex.outputs}
-
-            for edge in self.get_downstream_edges(vertex):
-                edge: NodeConnection
-                if edge.upstream_slot in v_outputs:
-                    v_outputs.remove(edge.upstream_slot)
-                if len(v_outputs) == 0:
-                    break
-
-            for v_out in v_outputs:
-                out = '{}_{}'.format(vertex.name, v_out)
-                outputs.append(PipelineOutput(output_name=out, upstream_slot=v_out, upstream_node=vertex))
-
-        return outputs
-
-    @property
-    def inputs(self) -> List[inspect.Parameter]:
+    def input_parameters(self) -> List[inspect.Parameter]:
         """
         Get list of inspect.parameter without duplicates (same value can be passed to multiple nodes)
         :return: list of inspect.Parameter for fit function, excluding self
@@ -895,12 +892,16 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         return get_input_signature(self)[0][1:]
 
     @property
-    def outputs(self) -> List[str]:
+    def input_names(self):
+        return [i.name for i in self.input_parameters]
+
+    @property
+    def output_names(self) -> List[str]:
         """
         Get human-friendly list of output names of .transform() function without detailed info about nodes
         :return: list of nodes's outputs that have no downstream nodes. Transform output
         """
-        return [o.output_name for o in self._outputs]
+        return [o.name for o in self.outputs]
 
     def validate_edge(self, edge):
         """
@@ -959,11 +960,11 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         :param name:
         :return:
         """
-        len_before = len(self._inputs)
+        len_before = len(self.inputs)
         if len_before == 0:
             raise DaskPipesException("{} Does not have any arguments".format(self))
-        self._inputs = [i for i in self._inputs if i.name == name]
-        if len(self._inputs) == len_before:
+        self.inputs = [i for i in self.inputs if i.name == name]
+        if len(self.inputs) == len_before:
             raise DaskPipesException("{} Does not have argument {}".format(self, name))
         self._update_fit_transform_signatures()
 
@@ -979,8 +980,48 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         """
         self.validate_vertex(node)
         # Find inputs to remove
-        self._inputs = [i for i in self._inputs if i.downstream_node is not node]
+        self.inputs = [i for i in self.inputs if i.downstream_node is not node]
         self._update_fit_transform_signatures()
+
+    def remove_output(self, name):
+        raise NotImplementedError()
+
+    def set_output(self, name: str, upstream_node: NodeBase, upstream_slot: Optional[str] = None,
+                   replace: bool = False):
+        if not issubclass(upstream_node.__class__, NodeBase):
+            raise ValueError("upstream_node must subclass {}".format(NodeBase.__name__))
+
+            # Check if specific output exists
+        for output in self.outputs:
+            if output.name == name:
+                if replace:
+                    self.remove_output(name)
+                else:
+                    raise ValueError("Output {} already exists".format(name))
+
+        # Check existance of upstream node output
+
+        upstream_outputs = [i.name for i in upstream_node.outputs]
+        if len(upstream_outputs) == 0:
+            raise ValueError("Upstream node does not have any outputs")
+
+        if not upstream_slot:
+            if len(upstream_outputs) == 1:
+                upstream_slot = upstream_outputs[0]
+            else:
+                raise ValueError("Upstream node {} has multiple outputs. Upstream node name must be one of {}. "
+                                 "Example: upstream['node_name'] >> pipeline['output'] ".format(upstream_node,
+                                                                                                upstream_outputs))
+
+        if upstream_slot not in upstream_outputs:
+            raise ValueError(
+                "Upstream node '{}' does not have output named '{}'. Available outputs: {}".format(upstream_node,
+                                                                                                   upstream_slot,
+                                                                                                   upstream_outputs))
+
+        self.outputs.append(
+            PipelineOutput(name, upstream_node, upstream_slot)
+        )
 
     def set_input(self, node: NodeBase, name=None, downstream_slot=None, suffix: Optional[str] = None):  # noqa: C901
         """
@@ -1020,6 +1061,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         if len(node_inputs) == 0:
             raise DaskPipesException("{} does not have any inputs".format(node))
 
+        # Cannot pipe single pipeline input to multiple node inputs
         if downstream_slot is None:
             if name is not None and len(node_inputs) > 1:
                 raise DaskPipesException(
@@ -1030,6 +1072,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
                 self.set_input(node, name, inp, suffix=suffix)
             return
 
+        # Check existence of node input
         if downstream_slot not in node_inputs:
             raise DaskPipesException(
                 "{} does not have input {}; available: {}".format(node, downstream_slot, list(node_inputs.keys())))
@@ -1042,7 +1085,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         if suffix is not None:
             name = '{}{}'.format(name, suffix)
 
-        current_args = [i for i in self._inputs if i.name == name]
+        current_args = [i for i in self.inputs if i.name == name]
         if len(current_args) > 0:
             for existing_arg in current_args:
                 if existing_arg.downstream_slot == downstream_slot and existing_arg.downstream_node is node:
@@ -1050,12 +1093,12 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
         param = node_inputs[downstream_slot]
 
-        self._inputs.append(PipelineInput(name=name,
-                                          downstream_slot=downstream_slot,
-                                          downstream_node=node,
-                                          default=param.default,
-                                          kind=param.kind,
-                                          annotation=param.annotation))
+        self.inputs.append(PipelineInput(name=name,
+                                         downstream_slot=downstream_slot,
+                                         downstream_node=node,
+                                         default=param.default,
+                                         kind=param.kind,
+                                         annotation=param.annotation))
         self._update_fit_transform_signatures()
 
     def _update_fit_transform_signatures(self):
@@ -1064,7 +1107,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         Infers and updates signatures of fit and transform methods for user-friendly hints
         :return:
         """
-        if len(self._inputs) > 0:
+        if len(self.inputs) > 0:
             new_params, param_downstream_mapping = get_input_signature(self)
             self._param_downstream_mapping = param_downstream_mapping
             return_annotation = self.__class__.fit.__annotations__.get('return', inspect._empty)
@@ -1147,7 +1190,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         :return:
         """
 
-        fit_params = [param for param in self.inputs if param.name in self._param_downstream_mapping]
+        fit_params = [param for param in self.input_parameters if param.name in self._param_downstream_mapping]
 
         # Used for injection of custom signature before passing to getcallargs
         # We need to distill self.fit from parameters passed to pipeline against parameters passed to input nodes
@@ -1173,7 +1216,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
             node_arguments[node.name] = dict()
 
         # Convert pipeline arguments to node arguments
-        for inp in self._inputs:
+        for inp in self.inputs:
             if inp.kind == inspect.Parameter.VAR_KEYWORD:
                 inp_name = '**'
             elif inp.kind == inspect.Parameter.VAR_POSITIONAL:
@@ -1194,7 +1237,79 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
         return node_arguments
 
-    # TODO: rename method
+    def repr_graphviz_node_name(self, node):
+        return node.name
+
+    def graphviz_add_node(self, g, node):
+        """
+        :type g: graphviz.Graph
+        """
+        max_span = max(len(node.inputs), len(node.outputs))
+
+        def get_parameter_repr(param):
+            if param.default != inspect._empty:
+                return '{} = {}'.format(param.name, repr(param.default))
+            return param.name
+
+        return g.node(self.repr_graphviz_node_name(node), f'''<
+        <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0">
+          <TR>
+            {''.join([f'<TD PORT="inp_{inp.name}">{get_parameter_repr(inp)}</TD>' for inp in node.inputs])}
+          </TR>
+          <TR>
+            <TD COLSPAN="{max_span}">{self.repr_graphviz_node_name(node)}</TD>
+          </TR>
+          <TR>
+            {''.join([f'<TD PORT="out_{out.name}">{out.name}</TD>' for out in node.outputs])}
+          </TR>
+        </TABLE>>''', shape='plaintext')
+
+    def graphviz_add_edge(self, g, edge):
+        """
+        :type g: graphviz.Graph
+        """
+        return g.edge(
+            "{}:out_{}".format(self.repr_graphviz_node_name(edge.upstream), edge.upstream_slot),
+            "{}:inp_{}".format(self.repr_graphviz_node_name(edge.downstream), edge.downstream_slot)
+        )
+
+    def graphviz_add_input(self, g, input: PipelineInput):
+        g.node(input.name, shape='ellipse')
+        g.edge(input.name, f'{input.downstream_node.name}:inp_{input.downstream_slot}')
+
+    def graphviz_add_output(self, g, output: PipelineOutput):
+        g.node(output.name, shape='ellipse')
+        g.edge(f'{output.upstream_node.name}:out_{output.upstream_slot}', output.name)
+
+    def show(self):
+        try:
+            from graphviz import Digraph
+        except ImportError:
+            raise ImportError("Graphviz not installed") from None
+
+        g = Digraph('G')
+
+        with g.subgraph(name='cluster_0') as p:
+            p.attr(label='Pipeline')
+            p.attr(color='lightgray')
+            # Render vertices and edges
+            for vertex in self.vertices:
+                self.graphviz_add_node(p, vertex)
+
+            for edge in self.edges:
+                self.graphviz_add_edge(p, edge)
+
+            # Render inputs
+            for input in self.inputs:
+                self.graphviz_add_input(p, input)
+
+            # Render outputs
+            for output in self.outputs:
+                self.graphviz_add_output(p, output)
+
+        return g
+
+    # TODO: rename method (why? - we do not add edges. instead, we add connections)
     def add_edge(self, node_connection: NodeConnection, edge_id=None) -> NodeConnection:
         """
         Add NodeConnection to current pipeline

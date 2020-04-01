@@ -43,7 +43,17 @@ def prepareNN():
          cs.Numeric & cs.Binary),
     ], remainder='passthrough'), name="ScaleNumericBinary")
 
-    (pipeline >> categorize >> convert_dates >> add_nullable_indicator >>
-     add_na_cat >> fillna >> scale >> one_hot >> scale_one_hot)
+    (
+            pipeline >>
+            categorize >>
+            convert_dates >>
+            add_nullable_indicator >>
+            add_na_cat >>
+            fillna >>
+            scale >>
+            one_hot >>
+            scale_one_hot >>
+            pipeline['normalized']
+    )
 
     return pipeline

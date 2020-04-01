@@ -80,7 +80,7 @@ class PipelineInput(namedtuple("_PipelineInput", ['name',
         return '<{}>'.format(str(self))
 
 
-PipelineOutput = namedtuple("PipelineOutput", ['output_name', 'upstream_slot', 'upstream_node'])
+PipelineOutput = namedtuple("PipelineOutput", ['name', 'upstream_node', 'upstream_slot'])
 
 
 def getcallargs_inverse(func, **callargs) -> Tuple[Iterable[Any], Dict[str, Any]]:  # noqa C901
@@ -211,12 +211,12 @@ def get_input_signature(pipeline) -> Tuple[List[inspect.Parameter], Dict[str, Li
     # Pipeline may contain some custom parameters, take them into account by using original signature
     params_by_kind = _split_signature_by_kind(original_signature)
 
-    if len(pipeline._inputs) > 0:
+    if len(pipeline.inputs) > 0:
         # Our pipeline has some inputs, remove default *args, **kwargs parameters
         # and populate signature with new parameters
         params_by_kind['var_pos'] = list()  # Remove default 'args' parameter
         params_by_kind['var_key'] = list()  # Remove default 'kwargs' parameter
-        for k, v in _split_signature_by_kind(pipeline._inputs).items():
+        for k, v in _split_signature_by_kind(pipeline.inputs).items():
             # Validate param names
             for param in v:
                 if param.name in reserved_names:
