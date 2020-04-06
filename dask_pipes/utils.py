@@ -3,13 +3,15 @@ import inspect
 import os
 import shutil
 from collections import namedtuple
-from typing import Union, Dict, Any, Callable, List, Type
+from typing import Union, Dict, Any, Callable, List, Type, TYPE_CHECKING
 
 import dask.dataframe as dd
 import numpy as np
 import yaml
-
 from dask_pipes.exceptions import DaskPipesException
+
+if TYPE_CHECKING:
+    pass
 
 __all__ = ['read_file', 'dump_yaml', 'load_yaml', 'cleanup_empty_dirs', 'try_create_dir', 'import_class', 'is_int',
            'assert_subclass', 'get_arguments_description', 'get_return_description',

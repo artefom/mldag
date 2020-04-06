@@ -3,9 +3,8 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import dask.dataframe as dd
-import pandas as pd
-
 import dask_pipes as dp
+import pandas as pd
 
 TEST_DS: Optional[pd.DataFrame] = None
 
@@ -35,12 +34,12 @@ def get_ds() -> pd.DataFrame:
 def test_pipeline():
     ds = get_ds()
 
-    p = dp.pipes.prepareNN()
+    p = dp.pipes.prepareNN(date_retro_date_mapping={'c5': 'c7'})
     p.mixins = [dp.mixins.CacheMixin('tmp')]
     f_run = p.fit(ds)
     t_run = p.transform(ds)
 
-    assert p.input_names == ['X_RobustCategoriser', 'y_RobustCategoriser', 'run_id']
+    assert p.input_names == ['X', 'run_id']
     assert p.output_names == ['normalized']
 
 

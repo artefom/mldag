@@ -6,6 +6,7 @@ import os
 import pathlib
 import types
 import urllib
+import urllib.parse
 import weakref
 from collections import namedtuple
 from functools import partial
@@ -16,12 +17,10 @@ import dask.dataframe as dd
 import pandas as pd
 import sqlalchemy as db
 import sqlalchemy.sql.functions as func
-import urllib.parse
 import yaml
-from yaml.constructor import ConstructorError
-
 from dask_pipes.base import PipelineMixin, NodeCallable, NodeBase
 from dask_pipes.exceptions import DaskPipesException
+from yaml.constructor import ConstructorError
 
 logger = logging.getLogger(__name__)
 

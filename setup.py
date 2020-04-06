@@ -1,10 +1,11 @@
 import importlib
-import os
 import io
 import logging
-from setuptools import setup, find_packages
-from typing import List
+import os
 import pathlib
+from typing import List
+
+from setuptools import setup, find_packages
 
 PARENT = pathlib.Path(__file__).parent
 

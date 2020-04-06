@@ -153,6 +153,23 @@ class VertexBase:
         """
         self._remove_relationship(other, upstream=False)
 
+    # =================================================================
+    # Graphviz node rendering
+    # =================================================================
+
+    def _graphviz_node_id(self, path):
+        return '{}{}'.format(path, self._id)
+
+    def _graphviz_node_name(self):
+        return str(self._id)
+
+    def graphviz_node_repr(self, g, path):
+        """
+        Add node to graphviz graph
+        :type g: graphviz.Digraph
+        """
+        return g.node(self._graphviz_node_id(path), self._graphviz_node_name())
+
 
 class EdgeBase:
     """
@@ -285,6 +302,19 @@ class EdgeBase:
 
     def __repr__(self):
         return '<{} ({},{}): {}>'.format(self.__class__.__name__, self._v1, self._v2, self._id)
+
+    # =======================================================
+    # Graphviz representation
+    # =======================================================
+
+    def graphviz_edge_repr(self, g, path):
+        """
+        :type g: graphviz.Digraph
+        """
+        return g.edge(
+            self.upstream._graphviz_node_id(path),
+            self.downstream._graphviz_node_id(path)
+        )
 
 
 class VertexWidthFirst:
@@ -680,26 +710,6 @@ class Graph:
     # Graphviz visualisation
     # ===========================================================
 
-    def repr_graphviz_node_name(self, node):
-        """
-        Get representation of node name for graphviz
-        """
-        return str(node._id)
-
-    def graphviz_add_node(self, g, node):
-        """
-        Add node to graphviz graphh
-        :type g: graphviz.Graph
-        """
-        return g.node(self.repr_graphviz_node_name(node))
-
-    def graphviz_add_edge(self, g, edge):
-        """
-        Add edge to graphbiz
-        :type g: graphviz.Graph
-        """
-        return g.edge(self.repr_graphviz_node_name(edge.upstream), self.repr_graphviz_node_name(edge.downstream))
-
     def show(self):
         try:
             from graphviz import Digraph
@@ -709,9 +719,9 @@ class Graph:
         g = Digraph('structs')
 
         for vertex in self.vertices:
-            self.graphviz_add_node(g, vertex)
+            vertex.graphviz_node_repr(g, '')
 
         for edge in self.edges:
-            self.graphviz_add_edge(g, edge)
+            edge.graphviz_edge_repr(g, '')
 
         return g

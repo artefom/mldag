@@ -4,7 +4,6 @@ import dask.dataframe as dd
 import numpy as np
 import pandas as pd
 from dask.dataframe.core import Scalar
-
 from dask_pipes.base import NodeBase
 from dask_pipes.base.pipeline import as_node
 from dask_pipes.exceptions import DaskPipesException
@@ -67,7 +66,7 @@ class RobustCategoriser(NodeBase):
             if new_coverage >= self.min_coverage:
                 coverage = new_coverage
                 categories = new_categories
-                if len(new_categories)+1 < len(val_counts):
+                if len(new_categories) + 1 < len(val_counts):
                     break
 
         return categories, coverage
@@ -145,7 +144,7 @@ class AddNaCategory(NodeBase):
                 if isinstance(num_na, Scalar):
                     num_na = num_na.compute()
                 if num_na == 0:
-                    pass
+                    continue
                 try:
                     if not col.cat.known:
                         raise ValueError("Can only add null category to known categoricals")

@@ -1,8 +1,8 @@
 import dask_ml.compose
 import dask_ml.impute
 import dask_ml.preprocessing
-
 from dask_pipes.nodes import AddNaIndicator, RobustCategoriser, DateProcessor, AddNaCategory
+
 from . import column_selection as cs
 from .nodes import as_node
 from .pipeline import Pipeline
@@ -10,11 +10,16 @@ from .pipeline import Pipeline
 __all__ = ['prepareNN']
 
 
-def prepareNN():
+def sort_columns(X):
+    return X[sorted(X.columns)]
+
+
+def prepareNN(date_retro_date_mapping=None):
     pipeline = Pipeline()
 
     categorize = RobustCategoriser()
-    convert_dates = DateProcessor(retro_date_mapping={'c5': 'c7'})
+
+    convert_dates = DateProcessor(retro_date_mapping=date_retro_date_mapping)
 
     add_nullable_indicator = as_node(dask_ml.compose.ColumnTransformer([
         ('add_na_indicator', AddNaIndicator(), cs.Numeric & cs.Nullable)
@@ -44,15 +49,17 @@ def prepareNN():
     ], remainder='passthrough'), name="ScaleNumericBinary")
 
     (
-            pipeline >>
-            categorize >>
+            pipeline['X'] >>
+            categorize['X'] >>
             convert_dates >>
+            # sort_columns >>
             add_nullable_indicator >>
             add_na_cat >>
             fillna >>
             scale >>
             one_hot >>
             scale_one_hot >>
+            # sort_columns >>
             pipeline['normalized']
     )
 

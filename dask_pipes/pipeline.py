@@ -385,7 +385,7 @@ class Pipeline(PipelineBase):
         node_input = deepcopy(node_input)
         return node.transform(*node_input[0], **node_input[1])
 
-    def mixins_initialize(self, run_id):
+    def _mixins_initialize(self, run_id):
         """
         Initialize mixins and create fit, transform functions
         """
@@ -405,7 +405,7 @@ class Pipeline(PipelineBase):
 
         return fit_func, transform_func
 
-    def mixins_finalize(self):
+    def _mixins_finalize(self):
         for mixin in self.mixins:
             mixin._end_run()
 
@@ -426,7 +426,7 @@ class Pipeline(PipelineBase):
         run_id = run_id or self._gen_run_id()
         run = PipelineRun(run_id=run_id)
 
-        fit_func, transform_func = self.mixins_initialize(run_id)
+        fit_func, transform_func = self._mixins_initialize(run_id)
         try:
             return run._compute(
                 graph=self,
@@ -437,7 +437,7 @@ class Pipeline(PipelineBase):
                 transform_func=transform_func,
             )
         finally:
-            self.mixins_finalize()
+            self._mixins_finalize()
 
     def transform(self, *args, run_id=None, **kwargs):
         """
@@ -453,7 +453,7 @@ class Pipeline(PipelineBase):
         run_id = run_id or self._gen_run_id()
         run = PipelineRun(run_id=run_id)
 
-        fit_func, transform_func = self.mixins_initialize(run_id)
+        fit_func, transform_func = self._mixins_initialize(run_id)
 
         try:
             return run._compute(
@@ -465,4 +465,4 @@ class Pipeline(PipelineBase):
                 transform_func=transform_func,
             )
         finally:
-            self.mixins_finalize()
+            self._mixins_finalize()
