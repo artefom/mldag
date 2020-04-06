@@ -3,8 +3,8 @@ from copy import deepcopy
 from typing import List, Optional, Dict, Any, Iterable
 from uuid import uuid4
 
-from dask_pipes.base import PipelineBase, NodeBase, NodeConnection, getcallargs_inverse
-from dask_pipes.base.graph import VertexWidthFirst
+from dask_pipes.core import PipelineBase, NodeBase, NodeConnection, getcallargs_inverse
+from dask_pipes.core.graph import VertexWidthFirst
 from dask_pipes.exceptions import DaskPipesException
 from dask_pipes.utils import ReturnDescription
 

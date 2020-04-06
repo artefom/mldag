@@ -1,11 +1,8 @@
 import importlib
-from typing import Optional, List, TYPE_CHECKING
+from typing import Optional, List
 
 from dask_pipes.exceptions import DaskPipesException
 from dask_pipes.utils import assert_subclass
-
-if TYPE_CHECKING:
-    import graphviz  # noqa: F401
 
 __all__ = ['Graph', 'VertexBase', 'EdgeBase', 'VertexWidthFirst']
 
@@ -153,23 +150,6 @@ class VertexBase:
         """
         self._remove_relationship(other, upstream=False)
 
-    # =================================================================
-    # Graphviz node rendering
-    # =================================================================
-
-    def _graphviz_node_id(self, path):
-        return '{}{}'.format(path, self._id)
-
-    def _graphviz_node_name(self):
-        return str(self._id)
-
-    def graphviz_node_repr(self, g, path):
-        """
-        Add node to graphviz graph
-        :type g: graphviz.Digraph
-        """
-        return g.node(self._graphviz_node_id(path), self._graphviz_node_name())
-
 
 class EdgeBase:
     """
@@ -302,19 +282,6 @@ class EdgeBase:
 
     def __repr__(self):
         return '<{} ({},{}): {}>'.format(self.__class__.__name__, self._v1, self._v2, self._id)
-
-    # =======================================================
-    # Graphviz representation
-    # =======================================================
-
-    def graphviz_edge_repr(self, g, path):
-        """
-        :type g: graphviz.Digraph
-        """
-        return g.edge(
-            self.upstream._graphviz_node_id(path),
-            self.downstream._graphviz_node_id(path)
-        )
 
 
 class VertexWidthFirst:
@@ -705,23 +672,3 @@ class Graph:
             graph.add_edge(e, edge_id)
 
         return graph
-
-    # ===========================================================
-    # Graphviz visualisation
-    # ===========================================================
-
-    def show(self):
-        try:
-            from graphviz import Digraph
-        except ImportError:
-            raise ImportError("Graphviz not installed") from None
-
-        g = Digraph('structs')
-
-        for vertex in self.vertices:
-            vertex.graphviz_node_repr(g, '')
-
-        for edge in self.edges:
-            edge.graphviz_edge_repr(g, '')
-
-        return g

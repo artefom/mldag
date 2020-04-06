@@ -4,8 +4,8 @@ import dask.dataframe as dd
 import numpy as np
 import pandas as pd
 from dask.dataframe.core import Scalar
-from dask_pipes.base import NodeBase
-from dask_pipes.base.pipeline import as_node
+from dask_pipes.core import NodeBase
+from dask_pipes.core.pipeline import as_node
 from dask_pipes.exceptions import DaskPipesException
 
 __all__ = [

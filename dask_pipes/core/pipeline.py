@@ -1,9 +1,11 @@
 import inspect
 from collections import defaultdict
 from types import MethodType
-from typing import List, Optional, Tuple, Any, Dict, TYPE_CHECKING, Union
+from typing import List, Optional, Tuple, Any, Dict, TYPE_CHECKING, Union, Iterable
 
-from dask_pipes.base._pipeline_utils import (
+from sklearn.base import BaseEstimator, TransformerMixin
+
+from dask_pipes.core._pipeline_utils import (
     PipelineInput,
     PipelineOutput,
     get_input_signature,
@@ -14,7 +16,7 @@ from dask_pipes.base._pipeline_utils import (
     getcallargs_inverse,
     validate_fit_transform,
 )
-from dask_pipes.base.graph import Graph, VertexBase, EdgeBase
+from dask_pipes.core.graph import Graph, VertexBase, EdgeBase
 from dask_pipes.exceptions import DaskPipesException
 from dask_pipes.utils import (
     get_arguments_description,
@@ -23,10 +25,10 @@ from dask_pipes.utils import (
     assert_subclass,
 )
 from dask_pipes.utils import replace_signature
-from sklearn.base import BaseEstimator, TransformerMixin
+from .display import GraphvizNodeMixin, GraphvizEdgeMixin, GraphvizGraphMixin, GRAPH_STYLE
 
 if TYPE_CHECKING:
-    import graphviz  # noqa: F401
+    pass
 
 __all__ = [
     'PipelineMeta',
@@ -39,6 +41,7 @@ __all__ = [
     'PipelineMixin',
     'NodeCallable',
     'as_node',
+    'as_transform',
 ]
 
 
@@ -139,7 +142,7 @@ class NodeSlot:
             return other_wrapped
 
 
-class NodeConnection(EdgeBase):
+class NodeConnection(EdgeBase, GraphvizEdgeMixin):
     """
     Edge with additional info about upstream and downstream slot name
     """
@@ -188,31 +191,25 @@ class NodeConnection(EdgeBase):
                                                   self._v2,
                                                   self.downstream_slot)
 
-    # =======================================================
-    # Graphviz representation
-    # =======================================================
+    # ============================================
+    # Graphviz stuff
+    # ============================================
 
-    def graphviz_edge_repr(self, g, path):
-        """
-        :type g: graphviz.Digraph
-        """
-        output_port = ''
-        input_port = ''
+    @property
+    def _graphviz_upstream(self) -> GraphvizNodeMixin:
+        return self.upstream
 
-        if issubclass(self.upstream.__class__, NodeBase):
-            _output_port = self.upstream.graphviz_output_port_id(self.upstream_slot)
-            if _output_port:
-                output_port = ':' + self.upstream.graphviz_output_port_id(self.upstream_slot)
+    @property
+    def _graphviz_downstream(self) -> GraphvizNodeMixin:
+        return self.downstream
 
-        if issubclass(self.downstream.__class__, NodeBase):
-            _input_port = self.upstream.graphviz_input_port_id(self.downstream_slot)
-            if _input_port:
-                input_port = ':' + self.upstream.graphviz_input_port_id(self.downstream_slot)
+    @property
+    def _graphviz_upstream_slot(self):
+        return self.upstream_slot
 
-        return g.edge(
-            self.upstream.graphviz_output_node_id(self.upstream_slot, path) + output_port,
-            self.downstream.graphviz_input_node_id(self.downstream_slot, path) + input_port,
-        )
+    @property
+    def _graphviz_downstream_slot(self):
+        return self.downstream_slot
 
 
 class NodeBaseMeta(type):
@@ -244,7 +241,7 @@ class NodeBaseMeta(type):
         return super().__new__(mcs, name, bases, attrs)
 
 
-class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMeta):
+class NodeBase(VertexBase, BaseEstimator, TransformerMixin, GraphvizNodeMixin, metaclass=NodeBaseMeta):
     """
     Node baseclass, derive from it and overload fit and transform methods
     """
@@ -559,81 +556,20 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         self.transform = MethodType(self.__class__.transform, self)
         self.transform.__doc__ = self.__class__.transform.__doc__
 
-    # =================================================================
-    # Graphviz node rendering
-    # =================================================================
-
+    # ============================================
+    # Graphviz stuff
+    # ============================================
     @property
-    def graphviz_show_input_ports(self):
-        return len(self.inputs) > 1
-
-    @property
-    def graphviz_show_output_ports(self):
-        return len(self.outputs) > 1
-
-    def _graphviz_node_id(self, path):
-        return '{}{}'.format(path, self.name)
-
     def _graphviz_node_name(self):
         return self.name
 
-    def graphviz_input_node_id(self, input_slot, path):
-        return self._graphviz_node_id(path)
+    @property
+    def _graphviz_input_names(self):
+        return [i.name for i in self.inputs]
 
-    def graphviz_input_port_id(self, input_slot):
-        if self.graphviz_show_input_ports:
-            return 'inp_{}'.format(input_slot)
-
-    def _graphviz_input_port_name(self, input_slot):
-        return input_slot
-
-    def graphviz_output_node_id(self, output_slot, path):
-        return self._graphviz_node_id(path)
-
-    def graphviz_output_port_id(self, output_slot):
-        if self.graphviz_show_output_ports:
-            return 'out_{}'.format(output_slot)
-
-    def _graphviz_output_port_name(self, output_slot):
-        return output_slot
-
-    def graphviz_node_repr(self, g, path):
-        """
-        :type g: graphviz.Digraph
-        """
-
-        if self.graphviz_show_input_ports:
-            input_defs = '<TR>' + ''.join([
-                '<TD PORT="{port_id}">{port_name}</TD>'.format(
-                    port_id=self.graphviz_input_port_id(inp.name),
-                    port_name=self._graphviz_input_port_name(inp.name)
-                )
-                for inp in self.inputs if self.graphviz_input_port_id(inp.name)
-            ]) + '</TR>'
-        else:
-            input_defs = ''
-
-        if self.graphviz_show_output_ports:
-            output_defs = '<TR>' + ''.join([
-                '<TD PORT="{port_id}">{port_name}</TD>'.format(
-                    port_id=self.graphviz_output_port_id(out.name),
-                    port_name=self._graphviz_output_port_name(out.name)
-                )
-                for out in self.outputs if self.graphviz_output_port_id(out.name)
-            ]) + "</TR>"
-        else:
-            output_defs = ''
-
-        max_span = max(len(self.inputs), len(self.outputs))
-
-        return g.node(self._graphviz_node_id(path), f'''<
-        <TABLE BORDER="1" CELLBORDER="0" CELLSPACING="2" STYLE="ROUNDED">
-          {input_defs}
-          <TR>
-            <TD COLSPAN="{max_span}">{self._graphviz_node_name()}</TD>
-          </TR>
-          {output_defs}
-        </TABLE>>''', shape='plaintext')
+    @property
+    def _graphviz_output_names(self):
+        return [i.name for i in self.outputs]
 
 
 class FunctionNode(NodeBase):
@@ -837,37 +773,46 @@ class PipelineNode(NodeBase):
     # Graphviz stuff
     # ===========================================================================
 
-    def _get_input_by_name(self, input_slot) -> PipelineInput:
-        inp = [i for i in self.inputs if i.name == input_slot]
-        if len(inp) == 0:
-            raise DaskPipesException("{} does not have {} input".format(self, input_slot))
-        assert len(inp) == 1, "Got multiple matching inputs somehow"
-        return inp[0]
-
-    def _get_output_by_name(self, output_slot) -> PipelineOutput:
-        out = [i for i in self.outputs if i.name == output_slot]
-        if len(out) == 0:
-            raise DaskPipesException("{} does not have {} output".format(self, output_slot))
-        assert len(out) == 1, "Got multiple matching output somehow"
-        return out[0]
-
     def graphviz_input_node_id(self, input_slot, path):
-        return self.pipeline.get_input_id(input_slot, path, self.name)
+        new_path = '{}{}/'.format(path, self.name)
+        return self.pipeline.graphviz_get_input_id(input_slot, new_path)
 
     def graphviz_input_port_id(self, input_slot):
         pass
 
+    def graphviz_input_port_name(self, input_slot):
+        pass
+
     def graphviz_output_node_id(self, output_slot, path):
-        return self.pipeline.get_output_id(output_slot, path, self.name)
+        new_path = '{}{}/'.format(path, self.name)
+        return self.pipeline.graphviz_get_output_id(output_slot, new_path)
 
     def graphviz_output_port_id(self, output_slot):
         pass
 
-    def graphviz_node_repr(self, g, path):
-        self.pipeline.graphviz_render(g, path, self.name)
+    def graphviz_output_port_name(self, output_slot):
+        pass
+
+    def graphviz_render(self, g, path):
+        new_path = '{}{}/'.format(path, self.name)
+
+        if GRAPH_STYLE.subgraph_cluster:
+            with g.subgraph(name='cluster_{}'.format(self.name)) as sg:
+                sg.attr(label=self.name)
+                sg.attr(labeljust=GRAPH_STYLE.subgraph_just)
+                sg.attr(fontname=GRAPH_STYLE.fontname),
+                sg.attr(fontsize=str(GRAPH_STYLE.subgraph_fontsize))
+                sg.attr(color=GRAPH_STYLE.subgraph_color)
+                sg.attr(style=GRAPH_STYLE.subgraph_style)
+                self.pipeline.graphviz_render(sg, new_path)
+        else:
+            self.pipeline.graphviz_render(g, new_path)
 
 
 class TransformNode(NodeBase):
+    """
+    Wraps node so it can be applied as transform in different part of pipeline
+    """
 
     def __init__(self, name=None, node=None):
         super().__init__(name)
@@ -904,7 +849,7 @@ class TransformNode(NodeBase):
         pass
 
     def transform(self, *args, **kwargs):
-        return self.node.fit(*args, **kwargs)
+        return self.node.transform(*args, **kwargs)
 
 
 def as_node(obj: Any, name=None) -> Union[Union[FunctionNode, EstimatorNode], PipelineNode]:
@@ -927,6 +872,15 @@ def as_node(obj: Any, name=None) -> Union[Union[FunctionNode, EstimatorNode], Pi
         return PipelineNode(name=name, pipeline=obj)
     else:
         return EstimatorNode(name=name, estimator=obj)
+
+
+def as_transform(obj: Any, name=None) -> TransformNode:
+    """
+    Makes node that is used only as transformer (requires it to be fitted somewhere else)
+    """
+    if not issubclass(obj.__class__, NodeBase):
+        raise DaskPipesException("Can only use Nodes as transform-only")
+    return TransformNode(name=name, node=obj)
 
 
 class DummyNode(NodeBase):
@@ -1004,7 +958,7 @@ class PipelineMixin:
         pass
 
 
-class PipelineBase(Graph, metaclass=PipelineMeta):
+class PipelineBase(Graph, GraphvizGraphMixin, metaclass=PipelineMeta):
 
     def __init__(self, mixins: Optional[List[PipelineMixin]] = None):
         super().__init__()
@@ -1021,6 +975,14 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
             self.mixins: List[PipelineMixin] = list()
         else:
             self.mixins: List[PipelineMixin] = mixins
+
+    @property
+    def vertices(self) -> List[NodeBase]:
+        return super().vertices
+
+    @property
+    def edges(self) -> List[NodeConnection]:
+        return super().edges
 
     @staticmethod
     def _get_default_node_name(node, counter=None):
@@ -1146,7 +1108,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
     def validate_edge(self, edge):
         """
-        Used by base graph class to check if edge can be added to current graph
+        Used by core graph class to check if edge can be added to current graph
         Checks if edge is subclass of NodeConnection
         :param edge:
         :return:
@@ -1155,7 +1117,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
     def validate_vertex(self, vertex):
         """
-        Used by base graph to check if vertex can be added to current graph
+        Used by core graph to check if vertex can be added to current graph
         Checks if vertex is subclass of NodeBase
         :param vertex:
         :return:
@@ -1485,76 +1447,6 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
         return node_arguments
 
-    def get_input_id(self, input_slot, path, name):
-        return '{}{}/inp_{}'.format(path, name, input_slot)
-
-    def get_output_id(self, output_slot, path, name):
-        return '{}{}/out_{}'.format(path, name, output_slot)
-
-    def graphviz_add_input(self, g, input: PipelineInput, path, name):
-        # Create node
-        g.node(self.get_input_id(input.name, path, name), input.name, shape='ellipse')
-
-        # Connect node
-        downstream_node_port = ''
-        downstream_node_name = input.downstream_node.graphviz_input_node_id(input.downstream_slot,
-                                                                            '{}{}/'.format(path, name))
-        _downstream_node_port = input.downstream_node.graphviz_input_port_id(input.downstream_slot)
-        if _downstream_node_port:
-            downstream_node_port = ':' + _downstream_node_port
-        g.edge(self.get_input_id(input.name, path, name), downstream_node_name + downstream_node_port)
-
-    def graphviz_add_output(self, g, output: PipelineOutput, path, name):
-        # Create node
-        output_node_id = self.get_output_id(output.name, path, name)
-        g.node(output_node_id, output.name, shape='ellipse')
-
-        # # Connect node
-        upstream_node_port = ''
-        upstream_node_name = output.upstream_node.graphviz_output_node_id(output.upstream_slot,
-                                                                          '{}{}/'.format(path, name))
-        _upstream_node_port = output.upstream_node.graphviz_output_port_id(output.upstream_slot)
-        if _upstream_node_port:
-            upstream_node_port = ':' + _upstream_node_port
-        g.edge(upstream_node_name + upstream_node_port, output_node_id)
-
-    def graphviz_render(self, g, path, name):
-        """
-        Render pipeline to graphviz graph
-        :type g: graphviz.Digraph
-        """
-        cluster_name = 'cluster_{}'.format(name)
-        full_path = '{}{}/'.format(path, name) if path else '{}/'.format(name)
-        with g.subgraph(name=cluster_name) as p:
-            p.attr(label=name)
-            p.attr(color='lightgray')
-            # Render vertices and edges
-            for vertex in self.vertices:
-                vertex.graphviz_node_repr(p, path=full_path)
-
-            for edge in self.edges:
-                edge.graphviz_edge_repr(p, path=full_path)
-
-            # Render inputs
-            for pipeline_input in self.inputs:
-                self.graphviz_add_input(p, pipeline_input, path, name)
-
-            # Render outputs
-            for pipeline_output in self.outputs:
-                self.graphviz_add_output(p, pipeline_output, path, name)
-
-    def show(self):
-        try:
-            from graphviz import Digraph
-        except ImportError:
-            raise ImportError("Graphviz not installed") from None
-
-        g = Digraph('G')
-
-        self.graphviz_render(g, '', 'main')
-
-        return g
-
     # TODO: rename method (why? - we do not add edges. instead, we add connections)
     def add_edge(self, node_connection: NodeConnection, edge_id=None) -> NodeConnection:
         """
@@ -1580,3 +1472,27 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         Sequentially calls transform in width-first order
         """
         raise NotImplementedError()
+
+    # ==========================================
+    # Graphviz stuff
+    # ==========================================
+
+    @property
+    def _graphviz_vertices(self) -> Iterable[GraphvizNodeMixin]:
+        return self.vertices
+
+    @property
+    def _graphviz_edges(self) -> Iterable[GraphvizEdgeMixin]:
+        return self.edges
+
+    @property
+    def _graphviz_inputs(self) -> Iterable[Tuple[str, GraphvizNodeMixin, str]]:
+        return [(i.name, i.downstream_node, i.downstream_slot) for i in self.inputs]
+
+    @property
+    def _graphviz_outputs(self) -> Iterable[Tuple[str, GraphvizNodeMixin, str]]:
+        return [(i.name, i.upstream_node, i.upstream_slot) for i in self.outputs]
+
+    @property
+    def _graphviz_name(self):
+        return 'main'

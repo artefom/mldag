@@ -7,7 +7,7 @@ __all__ = ['ColumnMapperBase']
 
 class ColumnMapperBase:
     """
-    Base class for arbitrary column processing, used by base.`dask_pipes.processors.ColumnMap`
+    Base class for arbitrary column processing, used by core.`dask_pipes.processors.ColumnMap`
     """
 
     def __init__(self, skip_cols=None):
