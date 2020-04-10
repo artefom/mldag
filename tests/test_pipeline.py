@@ -35,7 +35,7 @@ def test_pipeline():
     ds = get_ds()
 
     p = dp.pipes.prepareNN(date_retro_date_mapping={'c5': 'c7'})
-    p.mixins = [dp.mixins.CacheMixin('tmp')]
+    p.mixins = [dp.extensions.CacheMixin('tmp')]
     f_run = p.fit(ds)
     t_run = p.transform(ds)
 

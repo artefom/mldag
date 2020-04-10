@@ -388,7 +388,7 @@ class Pipeline(PipelineBase):
 
     def _mixins_initialize(self, run_id):
         """
-        Initialize mixins and create fit, transform functions
+        Initialize extensions and create fit, transform functions
         """
 
         def transform_func(run, node, node_input):
@@ -473,7 +473,7 @@ class Pipeline(PipelineBase):
              show_ports=False,
              show_port_labels=True,
              port_labels_minimal=True,
-             show_pipeline_io=False,
+             show_pipeline_io=True,
              show_class=True,
              cluster_pipeline_ports=True,
              max_pipeline_depth=-1):

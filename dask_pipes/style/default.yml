@@ -1,6 +1,6 @@
 colors:
   background: &color-background "#ffffff"
-  edges: &edges "#00000055"
+  edges: &edges "#00000077"
   edges-text: &edges-text "#000000"
 
   accent1-primary: &accent1-primary "#a1c9f4"
@@ -12,8 +12,8 @@ colors:
   accent2-outline: &accent2-outline "#ffddc7"
 
   accent3-text: &accent3-text "#000000"
-  accent3-primary: &accent3-primary "#bbbbbb"
-  accent3-outline: &accent3-outline "#999999"
+  accent3-primary: &accent3-primary "#f6bd98"
+  accent3-outline: &accent3-outline "#f6bd98"
 
 style:
   settings:
@@ -75,16 +75,25 @@ style:
   edge:
     color: *edges
     fontcolor: *edges-text
+    style: "solid"
+    arrowsize: "0.7"
+
+  dependency:
+    color: *edges
+    fontcolor: *edges-text
+    style: "dashed"
+    arrowhead: "open"
+    arrowsize: "0.7"
 
   subgraph:
-    - color: *accent2-outline
+    - color: *accent3-primary
       fontcolor: *accent2-text
       fillcolor: *accent2-outline
-      style: 'filled'
-    - color: *accent2-primary
+      style: 'filled, solid'
+    - color: *accent3-primary
       fontcolor: *accent2-text
       fillcolor: *accent2-primary
-      style: 'filled'
+      style: 'filled, solid'
   # Common graph properties
   # ----------------------------------
   graph:

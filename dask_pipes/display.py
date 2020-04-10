@@ -22,7 +22,12 @@ class GraphvizRenderer(PipelineRenderer):
     def style(self):
         return self._style or dask_pipes.style.current()
 
-    def get_node_id(self, node, path):
+    def get_node_id(self, node, path, parameters, pipeline_id=True):
+        if isinstance(node, pipeline.PipelineNode) and (self._get_node_depth(path) < parameters['max_pipeline_depth']):
+            if pipeline_id:
+                return 'cluster_{}{}'.format(path, node.name)
+            else:
+                return self.get_inner_node(node.pipeline, '{}{}/'.format(path, node.name), parameters)
         return '{}{}'.format(path, node.name)
 
     def get_node_label(self, node):
@@ -56,8 +61,8 @@ class GraphvizRenderer(PipelineRenderer):
             return '<TR> {} </TR>'.format(''.join(defs)), len(defs)
         return '', 0
 
-    def render_node(self, node, g, path, show_ports, show_class):
-        if show_ports:
+    def render_node(self, node, g, path, parameters):
+        if parameters['show_ports']:
             input_defs, input_defs_len = self._render_node_ports_htlm(node, input_flag=True)
             output_defs, output_defs_len = self._render_node_ports_htlm(node, input_flag=False)
             max_span = max(input_defs_len, output_defs_len)
@@ -73,7 +78,7 @@ class GraphvizRenderer(PipelineRenderer):
                 attrs = self.style['node-mro'][class_name]
                 break
 
-        if show_class:
+        if parameters['show_class']:
             class_def = f'''
             <TR>
                 <TD COLSPAN="{max_span}">&#xab;{node.__class__.__name__}&#xbb;</TD>
@@ -82,7 +87,7 @@ class GraphvizRenderer(PipelineRenderer):
         else:
             class_def = ''
 
-        return g.node(self.get_node_id(node, path),
+        return g.node(self.get_node_id(node, path, parameters),
                       f'''<
                         <TABLE BORDER="0" CELLBORDER="{self.style['node']['cellborder']}"
                             CELLSPACING="{self.style['node']['cellspacing']}">
@@ -168,7 +173,7 @@ class GraphvizRenderer(PipelineRenderer):
                                                        '{}{}/'.format(path, node.name),
                                                        port, input_flag, parameters)
 
-        node_id = self.get_node_id(node, path)
+        node_id = self.get_node_id(node, path, parameters)
         port_name = ''
         label = ''
         if parameters['show_ports']:
@@ -216,13 +221,64 @@ class GraphvizRenderer(PipelineRenderer):
         if isinstance(vertex, pipeline.PipelineNode) and depth < max_pipeline_depth:
             new_path = '{}{}/'.format(path, self.get_node_label(vertex))
             subgraph_style = self.style['subgraph'][self._get_node_depth(path) % len(self.style['subgraph'])]
-            with g.subgraph(name='cluster_{}'.format(new_path), graph_attr=subgraph_style) as sg:
+            with g.subgraph(name=self.get_node_id(vertex, path, parameters), graph_attr=subgraph_style) as sg:
                 sg.attr(label='&#xab;' + vertex.__class__.__name__ + '&#xbb; \n' + vertex.name)
                 self.render_pipeline(vertex.pipeline, sg, new_path, parameters)
         elif isinstance(vertex, pipeline.NodeBase):
             self.render_node(vertex, g, path,
-                             show_ports=parameters['show_ports'],
-                             show_class=parameters['show_class'], )
+                             parameters=parameters)
+
+    def get_inner_node(self, p: pipeline.PipelineBase, path, parameters):
+        """
+        Get any node inside pipeline (preferrably close to center)
+        """
+        node_ranks = dict()
+
+        for node in p.vertices:
+            node_ranks[node] = 0
+
+        assert len(node_ranks) > 0
+
+        # Calculate node ranks
+        updated_rank = True
+        while updated_rank:
+            updated_rank = False
+            for node, node_rank in node_ranks.items():
+                downstream_edges = node.get_downstream()
+                for edge in downstream_edges:
+                    if node_ranks[edge.downstream] != node_rank + 1:
+                        node_ranks[edge.downstream] = node_rank + 1
+                        updated_rank = True
+
+        max_rank = max(node_ranks.values())
+        min_rank = min(node_ranks.values())
+        mid_rank = (max_rank + min_rank) / 2
+
+        closest_node = None
+        closest_rank = None
+        for node, node_rank in node_ranks.items():
+            if closest_rank is None or abs(node_rank - mid_rank) < abs(closest_rank - mid_rank):
+                closest_node = node
+                closest_rank = node_rank
+
+        return self.get_node_id(closest_node, path, parameters, pipeline_id=False)
+
+    def render_vertex_dependencies(self, vertex: pipeline.NodeBase, g, path, parameters):
+        self_pipeline = isinstance(vertex, pipeline.PipelineNode)
+        cur_node_id = self.get_node_id(vertex, path, parameters, pipeline_id=self_pipeline)
+        for dep_name, dep in vertex.iter_valid_dependencies():
+            dep: pipeline.NodeBase
+            dep_node_id = self.get_node_id(dep, path, parameters, pipeline_id=False)
+            pipeline_id = self.get_node_id(dep, path, parameters, pipeline_id=True)
+            additional_args = dict()
+            if dep_node_id != pipeline_id:
+                additional_args['ltail'] = pipeline_id
+            g.edge(dep_node_id,
+                   cur_node_id,
+                   constraint="false",
+                   **self.style['dependency'],
+                   **additional_args,
+                   )
 
     def render_pipeline(self, p: pipeline.PipelineBase, g, path, parameters):
         """
@@ -231,6 +287,7 @@ class GraphvizRenderer(PipelineRenderer):
         # Render vertices and edges
         for vertex in p.vertices:
             self.render_vertex(vertex, g, path, parameters)
+            self.render_vertex_dependencies(vertex, g, path, parameters)
 
         for edge in p.edges:
             self.render_edge(edge, g, path, parameters)
@@ -243,7 +300,9 @@ class GraphvizRenderer(PipelineRenderer):
         except ImportError:
             raise ImportError("Could not import graphviz. Graphviz not installed!") from None
         return Digraph('G', engine='dot',
-                       graph_attr=self.style['graph'],
+                       graph_attr={
+                           **{'compound': "true"},
+                           **self.style['graph']},
                        node_attr=self.style['graph'],
                        edge_attr=self.style['graph'])
 
@@ -283,7 +342,7 @@ def display(obj,
             show_ports=False,
             show_port_labels=True,
             port_labels_minimal=True,
-            show_pipeline_io=False,
+            show_pipeline_io=True,
             show_class=True,
             cluster_pipeline_ports=True,
             max_pipeline_depth=-1,

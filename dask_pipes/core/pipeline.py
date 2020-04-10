@@ -1,5 +1,4 @@
 import inspect
-from collections import defaultdict
 from types import MethodType
 from typing import List, Optional, Tuple, Any, Dict, TYPE_CHECKING, Union
 
@@ -225,24 +224,87 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
     Node baseclass, derive from it and overload fit and transform methods
     """
 
-    def __init__(self, name: str = None):
+    def __init__(self, name: Optional[str] = None, dependencies: Optional[Dict[str, Any]] = None):
+        """
+        Parameters
+        --------------------------------
+        name : Optional[Dict[str, Any]]
+            Used as node unique identifier.
+            If None, assigned upon adding to graph automatically based on class name
+
+        dependencies : Optional[str]
+            map of {name: node} of dependencies of this node
+            Dependencies used in node computation order.
+            Node is computed only after all it's dependencies are computed
+            Use dependencies when need access to other estimator parameters
+        """
         super().__init__()
-        self.name = name
-        self._meta = defaultdict(dict)
+
+        self.name = name  # Name used as node unique identifier inside graph
+
+        # Notice: Dependencies are not regular edges
+        # Node can depend on any other object
+        self.dependencies = dependencies  # Dictionary of other nodes that this node depends on
+
+    def add_dependency(self, name, node):
+        """
+        Add dependency to current node
+
+        ...
+
+        Parameters
+        ----------------------
+        name : str
+            Name of dependency.
+
+        node : NodeBase
+            Node to depend on
+        """
+        if self.dependencies is None:
+            self.dependencies = dict()
+        self.dependencies[name] = node
+
+    def remove_dependency(self, name):
+        """
+        Remove dependency from current node
+
+        Parameters
+        ----------------------
+        name : str
+            Dependency name to remove
+
+        Raises
+        ----------------------
+        ValueError
+            If dependency with name 'name' does not exist
+
+        """
+        try:
+            del self.dependencies[name]
+        except (KeyError, TypeError):
+            raise ValueError("Dependency {} does not exist".format(name)) from None
+        if len(self.dependencies) == 0:
+            self.dependencies = None
+
+    def iter_valid_dependencies(self):
+        """
+        Iterate dependency nodes which are Nodes and included in current graph
+        """
+        if self.dependencies:
+            for dep_name, dep in self.dependencies.items():
+                if isinstance(dep, NodeBase) and dep.graph == self.graph:
+                    yield dep_name, dep
 
     def get_default_name(self):
         """
         Get user-friendly name of current node if user does not bother specifying names themselves
         Used when adding node to pipeline and self.name is None, since each node assigned to pipeline must have name
-        :return:
         """
         return to_snake_case(self.__class__.__name__)
 
     def __getitem__(self, slot):
         """
         Create child NodeSlot that will support piping to specific slots
-        :param slot:
-        :return:
         """
         available_slots = sorted({i.name for i in self.inputs}.union({i.name for i in self.outputs}))
 
@@ -256,13 +318,18 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         """
         self >> other
 
-        See also:
+        Parameters
+        -------------------
+        other : NodeSlot, NodeBase, Estimator, function
+            if other is not NodeSlot, NodeBase or Estimator as_node(other) is called.
+            can be one of NodeSlot, NodeBase, else as_node(other) is called.
+            piping to instance of PipelineBase is not supported. Use PipelineNode instead
+
+        See also
+        -------------------
             NodeSlot.__rshift__
             PipelineBase.__lshift__
 
-        :param other: can be one of NodeSlot, NodeBase, else as_node(other) is called.
-        piping to instance of PipelineBase is not supported
-        :return:
         """
         if isinstance(other, NodeSlot):
             # Seems like we're piping output of current node to another node slot
@@ -380,6 +447,12 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         super().set_upstream(other, upstream_slot=upstream_slot, downstream_slot=downstream_slot)
 
     def get_downstream(self):
+        """
+        Returns
+        --------------------
+        edges: List[EdgeBase]
+            List of downstream edges of current node
+        """
         return self.graph.get_downstream_edges(self)
 
     def is_leaf(self) -> bool:
@@ -396,26 +469,34 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         Pipes output of specific slot of upstream node to specific slot of current node
         Automatically assignes other or self to pipeline of one of them is not assigned
 
-        Example:
-        >>> # Construct pipeline and nodes
-        >>> p = PipelineBase()
-        >>> op1 = DummyNode('op1')
-        >>> op2 = DummyNode('op2')
-        >>>
-        >>> # Assign input for op1 as pipeline input and add it to pipeline
-        >>> p.set_input(op1)
-        >>>
-        >>> # Set downstream node, add op2 to pipeline
-        >>> # input ->> op1 ->> op2
-        >>> op1.set_downstream(op2)
+        ...
 
-        :param other: Node to set downstream
-        :type other: NodeBase
-        :param upstream_slot: this node output (name of one of self.outputs) or None
-        if None is passed and this node has only one output, automatically deducts upstream_slot
-        :param downstream_slot: downstream's input slot (name of one of other.inputs) or None
-        if None is passed and downstream node has only one input, automatically deducts upstream_slot
-        :return: None
+        Examples
+        ----------------------
+        >>> # Construct pipeline and nodes
+        ... p = PipelineBase()
+        ... op1 = DummyNode('op1')
+        ... op2 = DummyNode('op2')
+        ...
+        ... # Assign input for op1 as pipeline input and add it to pipeline
+        ... p.set_input(op1)
+        ...
+        ... # Set downstream node, add op2 to pipeline
+        ... # input ->> op1 ->> op2
+        ... op1.set_downstream(op2)
+
+        Parameters
+        ----------------------
+        other : NodeBase
+            Node set to downstream
+
+        upstream_slot : Optional[str]
+            this node output (name of one of self.outputs) or None
+            if None is passed and this node has only one output, automatically deducts upstream_slot
+
+        downstream_slot : Optional[str]
+            downstream's input slot (name of one of other.inputs) or None
+            if None is passed and downstream node has only one input, automatically deducts upstream_slot
         """
         super().set_downstream(other, upstream_slot=upstream_slot, downstream_slot=downstream_slot)
 
@@ -424,31 +505,42 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         Infer parameters prior to transforming dataset
         To be implemented by subclass pipelines
 
-        Signature of this function is changed dynamically.
-        As user sets pipeline input nodes, they are added to parameters of fit
+        .. note:
+            Signature of this function is changed dynamically.
+            As user sets pipeline input nodes, they are added to parameters of fit
 
-        Important!
-        Reason behind returning dict instead of storing fitted data inside node:
-        1. One node can be fitted multiple time in one pipeline
-        2. Do not use pickle to save model parameters. instead, serialize them explicitly to yaml or csv files
+        .. warning:
+            Reason behind returning dict instead of storing fitted data inside node:
+            1. One node can be fitted multiple time in one pipeline
+            2. Do not use pickle to save model parameters. instead, serialize them explicitly to yaml or csv files
 
-        # Example:
+        Parameters
+        ----------------------
+        args
+            List of arguments for fitting
+        kwargs
+            List of key-word arguments for fitting
+
+        Returns
+        ----------------------
+        self : NodeBase
+            Current object
+
+        Examples
+        --------------------------
         >>> import pandas as pd
-        >>> ds = pd.DataFrame([[1,2,3]])
-        >>> p = PipelineBase()
-        >>> op1 = DummyNode('op1')
-        >>> op2 = DummyNode('op2')
-        >>> p.set_input(op1)
-        >>> op1.set_downstream(op2)
-        >>> print(p.inputs) # ['dataset']
-        >>> # since pipeline has single input, it's allowed to pass ds as positional
-        >>> p.fit(ds)
-        >>> # but it can be also passed as key-word (consult p.inputs)
-        >>> p.fit(datset=ds)
+        ... ds = pd.DataFrame([[1,2,3]])
+        ... p = PipelineBase()
+        ... op1 = DummyNode('op1')
+        ... op2 = DummyNode('op2')
+        ... p.set_input(op1)
+        ... op1.set_downstream(op2)
+        ... print(p.inputs) # ['dataset']
+        ... # since pipeline has single input, it's allowed to pass ds as positional
+        ... p.fit(ds)
+        ... # but it can be also passed as key-word (consult p.inputs)
+        ... p.fit(datset=ds)
 
-        :param args:
-        :param kwargs:
-        :return: self
         """
         raise NotImplementedError()
 
@@ -459,32 +551,44 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         Signature of this function is changed dynamically.
         As user sets pipeline input nodes, they are added to parameters of transform
 
-        # Example
-        >>> import pandas as pd
-        >>> ds = pd.DataFrame([[1,2,3]])
-        >>> p = PipelineBase()
-        >>> op1 = DummyNode('op1')
-        >>> op2 = DummyNode('op2')
-        >>> p.set_input(op1)
-        >>> op1.set_downstream(op2)
-        >>> op1.fit(ds)
-        >>>
-        >>> print(p.outputs) # ['op3_result'] 'result' is because transform has not defined result annotations
-        >>> # since pipeline has single input, it's allowed to pass ds as positional
-        >>> p.transform(ds) # since output of pipeline is single dataset, returns ds.
-        >>> # If multiple datasets are returned, returns dictionary {dataset_name: dataset} (see p.outputs)
-        >>> # but it can be also passed as key-word (consult p.inputs)
-        >>> p.transform(datset=ds) # since output of pipeline is single dataset, returns ds
+        Examples
+        ----------------------------
 
-        :param args: placeholder for pipeline inputs.
-        Positional arguments are allowed only if pipeline has single input.
-        Positional arguments are not allowed to be mixed with key-word arguments
-        This is for safety purposes, because order of inputs can be changed dynamically during runtime
-        :param kwargs: placeholder for pipeline inputs.
-        Key-word inputs to pipeline
-        name of argument is equal to input nodes' input slots + optional suffix
-        single key-word argument can be piped to multiple nodes
-        :return: Node outputs that were not piped anywhere
+        >>> import pandas as pd
+        ... ds = pd.DataFrame([[1,2,3]])
+        ... p = PipelineBase()
+        ... op1 = DummyNode('op1')
+        ... op2 = DummyNode('op2')
+        ... p.set_input(op1)
+        ... op1.set_downstream(op2)
+        ... op1.fit(ds)
+        ...
+        ... print(p.outputs) # ['op3_result'] 'result' is because transform has not defined result annotations
+        ... # since pipeline has single input, it's allowed to pass ds as positional
+        ... p.transform(ds) # since output of pipeline is single dataset, returns ds.
+        ... # If multiple datasets are returned, returns dictionary {dataset_name: dataset} (see p.outputs)
+        ... # but it can be also passed as key-word (consult p.inputs)
+        ... p.transform(datset=ds) # since output of pipeline is single dataset, returns ds
+
+        Parameters
+        ------------------------
+
+        args
+            placeholder for pipeline inputs.
+            Positional arguments are allowed only if pipeline has single input.
+            Positional arguments are not allowed to be mixed with key-word arguments
+            This is for safety purposes, because order of inputs can be changed dynamically during runtime
+
+        kwargs
+            placeholder for pipeline inputs.
+            Key-word inputs to pipeline
+            name of argument is equal to input nodes' input slots + optional suffix
+            single key-word argument can be piped to multiple nodes
+
+        Returns
+        ------------------------
+        X
+            transformed dataset
         """
         raise NotImplementedError()
 
@@ -504,25 +608,34 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
     def _set_fit_signature(self, sign: inspect.Signature, doc=None):
         """
         Set fit signature of wrapped estimator
-        :param sign:
-        :param doc:
-        :return:
+
+        Parameters
+        ---------------------------
+        sign : inspect.Signature
+            Function signature
+
+        doc : str
+            Function documentation
         """
         self.fit = MethodType(replace_signature(self.__class__.fit, sign, doc=doc), self)
 
     def _set_transform_signature(self, sign: inspect.Signature, doc=None):
         """
         Set transform signature of  wrapped estimator
-        :param sign:
-        :param doc:
-        :return:
+
+        Parameters
+        ---------------------------
+        sign : inspect.Signature
+            Function signature
+
+        doc : str
+            Function documentation
         """
         self.transform = MethodType(replace_signature(self.__class__.transform, sign, doc=doc), self)
 
     def _reset_fit_signature(self):
         """
         When estimator is removed, reset fit signature and documentation string to original
-        :return:
         """
         self.fit = MethodType(self.__class__.fit, self)
         self.fit.__doc__ = self.__class__.fit.__doc__
@@ -530,7 +643,6 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
     def _reset_transform_signature(self):
         """
         When estimator is removed, reset transform signature and documentation string to original
-        :return:
         """
         self.transform = MethodType(self.__class__.transform, self)
         self.transform.__doc__ = self.__class__.transform.__doc__
@@ -740,7 +852,7 @@ class TransformNode(NodeBase):
     """
 
     def __init__(self, name=None, node=None):
-        super().__init__(name)
+        super().__init__(name=name)
         self._node: Optional[NodeBase] = None
         self.node = node
 
@@ -764,8 +876,10 @@ class TransformNode(NodeBase):
             self._set_fit_signature(fit_sign, doc=node.fit.__doc__)
             self._set_transform_signature(inspect.signature(node.transform.__func__),
                                           doc=node.transform.__doc__)
+            self.add_dependency("transformer", node)
         else:
             # noinspection PyTypeChecker
+            self.remove_dependency("transformer")
             self._reset_transform_signature()
             self._reset_fit_signature()
         self._node = node
@@ -783,13 +897,29 @@ def as_node(obj: Any, name=None) -> Union[Union[FunctionNode, EstimatorNode], Pi
     To add node to pipeline, see PipelineBase.set_input
 
     this function is called whenever non-node is piped to pipeline with byte-shift operators
-    >>> p = PipelineBase()
-    >>> def foo(X): ...
-    >>> p >> foo  # as_node is called
 
-    :param obj: Object to wrap
-    :param name: Name of node to be used in pipeline
-    :return: EstimatorNode or FunctionNode
+    Parameters
+    -------------------
+    obj : Estimator, function
+        Object to wrap
+
+    name : str
+        Name of node to be used in pipeline
+
+    Returns
+    -------------------
+    node : EstimatorNode, FunctionNode or PipelineNode
+        object wrapped as node to be used in pipeline
+
+    Examples
+    -------------------
+
+    Automatic as_node execution
+    >>> p = PipelineBase()
+    ... def foo(X): ...
+    ... p >> foo  # as_node is called
+
+
     """
     if callable(obj):
         return FunctionNode(name=name, func=obj)
@@ -802,7 +932,23 @@ def as_node(obj: Any, name=None) -> Union[Union[FunctionNode, EstimatorNode], Pi
 def as_transform(obj: Any, name=None) -> TransformNode:
     """
     Makes node that is used only as transformer (requires it to be fitted somewhere else)
+    Fit is not called
+
+    Parameters
+    -------------------
+    obj : Estimator, function
+        Object to wrap
+
+    name : str
+        Name of node to be used in pipeline
+
+    Returns
+    -------------------
+    node : EstimatorNode, FunctionNode or PipelineNode
+        object wrapped as node to be used in pipeline
+
     """
+
     if not issubclass(obj.__class__, NodeBase):
         raise DaskPipesException("Can only use Nodes as transform-only")
     return TransformNode(name=name, node=obj)
@@ -816,10 +962,10 @@ class DummyNode(NodeBase):
     def __init__(self, name=None):
         super().__init__(name=name)
 
-    def fit(self, X, y=None):
+    def fit(self, X):
         return X
 
-    def transform(self, X, y=None):
+    def transform(self, X):
         return X
 
 

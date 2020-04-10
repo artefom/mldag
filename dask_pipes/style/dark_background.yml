@@ -1,5 +1,7 @@
 colors:
   background: &color-background "#111111"
+  edges: &edges "#ffffff77"
+  edges-text: &edges-text "#ffffff"
 
   accent1-primary: &accent1-primary "#30364a"
   accent1-outline: &accent1-outline "#757b92"
@@ -62,18 +64,27 @@ style:
       color: *accent1-outline
 
   edge:
-    color: '#ffffff55'
-    fontcolor: 'white'
+    color: *edges
+    fontcolor: *edges-text
+    style: "solid"
+    arrowsize: "0.7"
+
+  dependency:
+    color: *edges
+    fontcolor: *edges-text
+    style: "dashed"
+    arrowhead: "open"
+    arrowsize: "0.7"
 
   subgraph:
-    - color: *accent2-outline
+    - color: *accent3-primary
       fontcolor: *accent2-text
       fillcolor: *accent2-outline
-      style: 'filled'
-    - color: *accent2-primary
+      style: 'filled, solid'
+    - color: *accent3-primary
       fontcolor: *accent2-text
       fillcolor: *accent2-primary
-      style: 'filled'
+      style: 'filled, solid'
   # Common graph properties
   # ----------------------------------
   graph:
