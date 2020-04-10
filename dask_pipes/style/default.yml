@@ -1,0 +1,94 @@
+colors:
+  background: &color-background "#ffffff"
+  edges: &edges "#00000055"
+  edges-text: &edges-text "#000000"
+
+  accent1-primary: &accent1-primary "#a1c9f4"
+  accent1-outline: &accent1-outline "#82b6ed"
+  accent1-text: &accent1-text "#000000"
+
+  accent2-text: &accent2-text "#bc6429"
+  accent2-primary: &accent2-primary "#ffd1b3"
+  accent2-outline: &accent2-outline "#ffddc7"
+
+  accent3-text: &accent3-text "#000000"
+  accent3-primary: &accent3-primary "#bbbbbb"
+  accent3-outline: &accent3-outline "#999999"
+
+style:
+  settings:
+    ports: false
+    port-labels: true
+    port-labels-minmal: true
+    hide-pipeline-io: false
+    show-class: true
+    cluster-pipeline-ports: true
+    max-pipeline-depth: -1
+
+  pipeline-input:
+    shape: "cds"
+    style: 'filled'
+    color: *accent3-outline
+    fillcolor: *accent3-primary
+    fontcolor: *accent3-text
+
+  pipeline-output:
+    shape: "cds"
+    style: 'filled'
+    orientation: "180"
+    color: *accent3-outline
+    fillcolor: *accent3-primary
+    fontcolor: *accent3-text
+
+  node:
+    shape: "box"
+    style: "filled, solid"
+    cellborder: "0"
+    cellspacing: "1"
+    fillcolor: *accent1-primary
+    width: '1.5'
+    margin: '0.1'
+    fontcolor: *accent1-text
+    color: *accent1-outline
+  node-mro:
+    PipelineNode:
+      shape: "box3d"
+      style: "filled, solid"
+      cellborder: "0"
+      cellspacing: "1"
+      fillcolor: *accent1-primary
+      width: '1.5'
+      margin: '0.1'
+      fontcolor: *accent1-text
+      color: *accent1-outline
+    TransformNode:
+      shape: "component"
+      style: "filled, solid"
+      cellborder: "0"
+      cellspacing: "1"
+      fillcolor: *accent1-primary
+      width: '1.5'
+      margin: '0.1'
+      fontcolor: *accent1-text
+      color: *accent1-outline
+
+  edge:
+    color: *edges
+    fontcolor: *edges-text
+
+  subgraph:
+    - color: *accent2-outline
+      fontcolor: *accent2-text
+      fillcolor: *accent2-outline
+      style: 'filled'
+    - color: *accent2-primary
+      fontcolor: *accent2-text
+      fillcolor: *accent2-primary
+      style: 'filled'
+  # Common graph properties
+  # ----------------------------------
+  graph:
+    fontname: 'Verdana'
+    fontsize: '10'
+    bgcolor: *color-background
+    labeljust: 'l'

@@ -1,7 +1,7 @@
 import inspect
 from collections import defaultdict
 from types import MethodType
-from typing import List, Optional, Tuple, Any, Dict, TYPE_CHECKING, Union, Iterable
+from typing import List, Optional, Tuple, Any, Dict, TYPE_CHECKING, Union
 
 from sklearn.base import BaseEstimator, TransformerMixin
 
@@ -24,8 +24,7 @@ from dask_pipes.utils import (
     ReturnDescription,
     assert_subclass,
 )
-from dask_pipes.utils import replace_signature
-from .display import GraphvizNodeMixin, GraphvizEdgeMixin, GraphvizGraphMixin, GRAPH_STYLE
+from dask_pipes.utils import replace_signature, to_snake_case
 
 if TYPE_CHECKING:
     pass
@@ -142,7 +141,7 @@ class NodeSlot:
             return other_wrapped
 
 
-class NodeConnection(EdgeBase, GraphvizEdgeMixin):
+class NodeConnection(EdgeBase):
     """
     Edge with additional info about upstream and downstream slot name
     """
@@ -191,26 +190,6 @@ class NodeConnection(EdgeBase, GraphvizEdgeMixin):
                                                   self._v2,
                                                   self.downstream_slot)
 
-    # ============================================
-    # Graphviz stuff
-    # ============================================
-
-    @property
-    def _graphviz_upstream(self) -> GraphvizNodeMixin:
-        return self.upstream
-
-    @property
-    def _graphviz_downstream(self) -> GraphvizNodeMixin:
-        return self.downstream
-
-    @property
-    def _graphviz_upstream_slot(self):
-        return self.upstream_slot
-
-    @property
-    def _graphviz_downstream_slot(self):
-        return self.downstream_slot
-
 
 class NodeBaseMeta(type):
     """
@@ -241,7 +220,7 @@ class NodeBaseMeta(type):
         return super().__new__(mcs, name, bases, attrs)
 
 
-class NodeBase(VertexBase, BaseEstimator, TransformerMixin, GraphvizNodeMixin, metaclass=NodeBaseMeta):
+class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMeta):
     """
     Node baseclass, derive from it and overload fit and transform methods
     """
@@ -257,7 +236,7 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, GraphvizNodeMixin, m
         Used when adding node to pipeline and self.name is None, since each node assigned to pipeline must have name
         :return:
         """
-        return self.__class__.__name__
+        return to_snake_case(self.__class__.__name__)
 
     def __getitem__(self, slot):
         """
@@ -556,21 +535,6 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, GraphvizNodeMixin, m
         self.transform = MethodType(self.__class__.transform, self)
         self.transform.__doc__ = self.__class__.transform.__doc__
 
-    # ============================================
-    # Graphviz stuff
-    # ============================================
-    @property
-    def _graphviz_node_name(self):
-        return self.name
-
-    @property
-    def _graphviz_input_names(self):
-        return [i.name for i in self.inputs]
-
-    @property
-    def _graphviz_output_names(self):
-        return [i.name for i in self.outputs]
-
 
 class FunctionNode(NodeBase):
     """
@@ -587,7 +551,7 @@ class FunctionNode(NodeBase):
         try:
             return self.func.__name__
         except DaskPipesException:
-            return self.__class__.__name__
+            return to_snake_case(self.__class__.__name__)
 
     @property
     def func(self):
@@ -643,9 +607,9 @@ class EstimatorNode(NodeBase):
 
     def get_default_name(self):
         try:
-            return self.estimator.__class__.__name__
+            return to_snake_case(self.estimator.__class__.__name__)
         except DaskPipesException:
-            return self.__class__.__name__
+            return to_snake_case(self.__class__.__name__)
 
     @property
     def estimator(self):
@@ -744,7 +708,7 @@ class PipelineNode(NodeBase):
 
             transform_sign = inspect.Signature(
                 parameters=self_parameter + unique_additional_parameters,
-                return_annotation=tuple((i.name for i in pipeline.outputs))
+                return_annotation={i.name: i.annotation for i in pipeline.outputs}
             )
 
             self._set_transform_signature(transform_sign,
@@ -768,45 +732,6 @@ class PipelineNode(NodeBase):
     def transform(self, *args, **kwargs):
         res = self.pipeline.transform(*args, **kwargs)
         return tuple((res.outputs[output.name] for output in self.pipeline.outputs))
-
-    # ===========================================================================
-    # Graphviz stuff
-    # ===========================================================================
-
-    def graphviz_input_node_id(self, input_slot, path):
-        new_path = '{}{}/'.format(path, self.name)
-        return self.pipeline.graphviz_get_input_id(input_slot, new_path)
-
-    def graphviz_input_port_id(self, input_slot):
-        pass
-
-    def graphviz_input_port_name(self, input_slot):
-        pass
-
-    def graphviz_output_node_id(self, output_slot, path):
-        new_path = '{}{}/'.format(path, self.name)
-        return self.pipeline.graphviz_get_output_id(output_slot, new_path)
-
-    def graphviz_output_port_id(self, output_slot):
-        pass
-
-    def graphviz_output_port_name(self, output_slot):
-        pass
-
-    def graphviz_render(self, g, path):
-        new_path = '{}{}/'.format(path, self.name)
-
-        if GRAPH_STYLE.subgraph_cluster:
-            with g.subgraph(name='cluster_{}'.format(self.name)) as sg:
-                sg.attr(label=self.name)
-                sg.attr(labeljust=GRAPH_STYLE.subgraph_just)
-                sg.attr(fontname=GRAPH_STYLE.fontname),
-                sg.attr(fontsize=str(GRAPH_STYLE.subgraph_fontsize))
-                sg.attr(color=GRAPH_STYLE.subgraph_color)
-                sg.attr(style=GRAPH_STYLE.subgraph_style)
-                self.pipeline.graphviz_render(sg, new_path)
-        else:
-            self.pipeline.graphviz_render(g, new_path)
 
 
 class TransformNode(NodeBase):
@@ -958,7 +883,7 @@ class PipelineMixin:
         pass
 
 
-class PipelineBase(Graph, GraphvizGraphMixin, metaclass=PipelineMeta):
+class PipelineBase(Graph, metaclass=PipelineMeta):
 
     def __init__(self, mixins: Optional[List[PipelineMixin]] = None):
         super().__init__()
@@ -1222,8 +1147,14 @@ class PipelineBase(Graph, GraphvizGraphMixin, metaclass=PipelineMeta):
                                                                                                    upstream_slot,
                                                                                                    upstream_outputs))
 
+        upstream_output = [i for i in upstream_node.outputs if i.name == upstream_slot]
+        assert len(upstream_output) > 0
+        if len(upstream_output) > 1:
+            raise ValueError("Upstream node {} has multiple outputs named {}".format(upstream_node, upstream_slot))
+        upstream_output = upstream_output[0]
+
         self.outputs.append(
-            PipelineOutput(name, upstream_node, upstream_slot)
+            PipelineOutput(name, upstream_node, upstream_slot, upstream_output.type)
         )
 
     def set_input(self, node: NodeBase, name=None, downstream_slot=None, suffix: Optional[str] = None):  # noqa: C901
@@ -1472,27 +1403,3 @@ class PipelineBase(Graph, GraphvizGraphMixin, metaclass=PipelineMeta):
         Sequentially calls transform in width-first order
         """
         raise NotImplementedError()
-
-    # ==========================================
-    # Graphviz stuff
-    # ==========================================
-
-    @property
-    def _graphviz_vertices(self) -> Iterable[GraphvizNodeMixin]:
-        return self.vertices
-
-    @property
-    def _graphviz_edges(self) -> Iterable[GraphvizEdgeMixin]:
-        return self.edges
-
-    @property
-    def _graphviz_inputs(self) -> Iterable[Tuple[str, GraphvizNodeMixin, str]]:
-        return [(i.name, i.downstream_node, i.downstream_slot) for i in self.inputs]
-
-    @property
-    def _graphviz_outputs(self) -> Iterable[Tuple[str, GraphvizNodeMixin, str]]:
-        return [(i.name, i.upstream_node, i.upstream_slot) for i in self.outputs]
-
-    @property
-    def _graphviz_name(self):
-        return 'main'

@@ -8,6 +8,7 @@ from typing import Union, Dict, Any, Callable, List, Type, TYPE_CHECKING
 import dask.dataframe as dd
 import numpy as np
 import yaml
+
 from dask_pipes.exceptions import DaskPipesException
 
 if TYPE_CHECKING:
@@ -15,13 +16,17 @@ if TYPE_CHECKING:
 
 __all__ = ['read_file', 'dump_yaml', 'load_yaml', 'cleanup_empty_dirs', 'try_create_dir', 'import_class', 'is_int',
            'assert_subclass', 'get_arguments_description', 'get_return_description',
-           'ReturnDescription', 'is_categorical', 'replace_signature']
+           'ReturnDescription', 'is_categorical', 'replace_signature', 'to_snake_case']
 
 VALIDATE_SUBCLASSES = False
 
 ReturnDescription = namedtuple("ReturnDescription", ['name', 'type', 'description'])
 
 RETURN_UNNAMED = 'result'
+
+
+def to_snake_case(text):
+    return ''.join(('_' + i.lower() if i.isupper() else i for i in text if i.isalnum())).lstrip('_')
 
 
 def replace_signature(func, sign, doc=None):
@@ -80,7 +85,7 @@ def get_return_description(func: Callable) -> List[ReturnDescription]:
                 var_type = v[1]
             elif isinstance(v, str):
                 var_name = v
-                var_type = object
+                var_type = inspect._empty
             else:
                 raise NotImplementedError()
             if var_name in set((i[0] for i in rv)):
@@ -90,7 +95,7 @@ def get_return_description(func: Callable) -> List[ReturnDescription]:
     elif isinstance(return_type, dict):
         return [ReturnDescription(name=k, type=v, description=None) for k, v in return_type.items()]
     elif isinstance(return_type, str):
-        return [ReturnDescription(name=return_type, type=object, description=None)]
+        return [ReturnDescription(name=return_type, type=inspect._empty, description=None)]
     else:
         return [ReturnDescription(name=RETURN_UNNAMED, type=return_type, description=None)]
 

@@ -80,7 +80,7 @@ class PipelineInput(namedtuple("_PipelineInput", ['name',
         return '<{}>'.format(str(self))
 
 
-PipelineOutput = namedtuple("PipelineOutput", ['name', 'upstream_node', 'upstream_slot'])
+PipelineOutput = namedtuple("PipelineOutput", ['name', 'upstream_node', 'upstream_slot', 'annotation'])
 
 
 def getcallargs_inverse(func, **callargs) -> Tuple[Iterable[Any], Dict[str, Any]]:  # noqa C901

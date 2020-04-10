@@ -4,7 +4,7 @@ import dask.dataframe as dd
 import numpy as np
 import pandas as pd
 from dask.dataframe.core import Scalar
-from dask_pipes.core import NodeBase
+
 from dask_pipes.core.pipeline import as_node
 from dask_pipes.exceptions import DaskPipesException
 
@@ -17,14 +17,13 @@ __all__ = [
 ]
 
 
-class RobustCategoriser(NodeBase):
+class RobustCategoriser:
     """
     Remove infrequent values
     By default transforms only columns of dtype object
     """
 
     def __init__(self,
-                 name=None,
                  columns=None,
                  include_columns=None,
                  exclude_columns=None,
@@ -32,7 +31,6 @@ class RobustCategoriser(NodeBase):
                  min_coverage=0.5,
                  replacement='<Other>',
                  drop=True):
-        super().__init__(name)
         self.columns = columns
         self.include_columns = include_columns
         self.exclude_columns = exclude_columns
@@ -123,10 +121,9 @@ class RobustCategoriser(NodeBase):
         return X
 
 
-class AddNaCategory(NodeBase):
+class AddNaCategory:
 
-    def __init__(self, name=None, unknown_cat='<Unknown>'):
-        super().__init__(name=name)
+    def __init__(self, unknown_cat='<Unknown>'):
         self.unknown_cat = unknown_cat
 
         # Fittable
@@ -164,13 +161,9 @@ class AddNaCategory(NodeBase):
         return X
 
 
-class DateProcessor(NodeBase):
+class DateProcessor:
 
-    def __init__(self,
-                 name=None,
-                 retro_date_mapping=None):
-        super().__init__(name=name)
-
+    def __init__(self, retro_date_mapping=None):
         self.retro_date_mapping = retro_date_mapping
         self.timedeltas_ = None
         self.datetimes_ = None
@@ -236,11 +229,9 @@ class DateProcessor(NodeBase):
         return X
 
 
-class AddNaIndicator(NodeBase):
+class AddNaIndicator:
 
-    def __init__(self, name=None):
-        super().__init__(name=name)
-
+    def __init__(self):
         self.indicator_cols_ = None
 
     def fit(self, X, y=None):

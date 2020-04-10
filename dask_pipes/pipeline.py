@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from dask_pipes.core import PipelineBase, NodeBase, NodeConnection, getcallargs_inverse
 from dask_pipes.core.graph import VertexWidthFirst
+from dask_pipes.display import display
 from dask_pipes.exceptions import DaskPipesException
 from dask_pipes.utils import ReturnDescription
 
@@ -466,3 +467,22 @@ class Pipeline(PipelineBase):
             )
         finally:
             self._mixins_finalize()
+
+    def show(self,
+             renderer=None,
+             show_ports=False,
+             show_port_labels=True,
+             port_labels_minimal=True,
+             show_pipeline_io=False,
+             show_class=True,
+             cluster_pipeline_ports=True,
+             max_pipeline_depth=-1):
+        return display(self,
+                       renderer=renderer,
+                       show_ports=show_ports,
+                       show_port_labels=show_port_labels,
+                       port_labels_minimal=port_labels_minimal,
+                       show_pipeline_io=show_pipeline_io,
+                       show_class=show_class,
+                       cluster_pipeline_ports=cluster_pipeline_ports,
+                       max_pipeline_depth=max_pipeline_depth)
