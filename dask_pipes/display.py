@@ -1,8 +1,8 @@
-import inspect
 from typing import TYPE_CHECKING
 
 import dask_pipes.style
 from dask_pipes.core import pipeline
+from dask_pipes.utils import INSPECT_EMPTY_PARAMETER
 
 if TYPE_CHECKING:
     from graphviz import Digraph  # noqa: F401
@@ -109,7 +109,7 @@ class GraphvizRenderer(PipelineRenderer):
 
     def _render_pipeline_port_node(self, g, port_annotation, node_id, port_name, input_flag, parameters):
         style = self.style['pipeline-input'] if input_flag else self.style['pipeline-output']
-        if parameters['show_class'] and port_annotation != inspect._empty:
+        if parameters['show_class'] and port_annotation != INSPECT_EMPTY_PARAMETER:
             annotation = port_annotation.__name__ \
                 if isinstance(port_annotation, type) else str(port_annotation)
             class_tag = "&#xab;" + annotation + "&#xbb;" + "\n"
@@ -184,8 +184,8 @@ class GraphvizRenderer(PipelineRenderer):
             label = port
             # Do not draw input port if node has only one required input port
             if parameters['port_labels_minimal']:
-                if input_flag and sum((i.default == inspect._empty for i in node.inputs)) == 1:
-                    if any((port == i.name and i.default == inspect._empty for i in node.inputs)):
+                if input_flag and sum((i.default == INSPECT_EMPTY_PARAMETER for i in node.inputs)) == 1:
+                    if any((port == i.name and i.default == INSPECT_EMPTY_PARAMETER for i in node.inputs)):
                         label = ''
                 elif not input_flag and len(node.outputs) == 1:
                     label = ''

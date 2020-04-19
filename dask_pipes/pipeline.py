@@ -4,7 +4,6 @@ from typing import List, Optional, Dict, Any, Iterable
 from uuid import uuid4
 
 from dask_pipes.core import PipelineBase, NodeBase, NodeConnection, getcallargs_inverse
-from dask_pipes.core.graph import VertexWidthFirst
 from dask_pipes.display import display
 from dask_pipes.exceptions import DaskPipesException
 from dask_pipes.utils import ReturnDescription
@@ -14,14 +13,25 @@ __all__ = ['Pipeline']
 
 def _parse_node_output(node, output):
     """
-    Get dictionary of key-values from return of function
+    Convert function return value to dictionary using node output definition
 
-    Converts list, tuple or dict to key-value pairs
-    makes sanity checks
+    Parameters
+    ----------
+    node
+        class of node to read transform return annotation from
+    output
+        return value of .transform() method
 
-    :param node: class of node to read transform return annotation from
-    :param output: return value of .transform() method
-    :return:
+    Returns
+    -------
+    output : dict
+        Dictionary of  output name : output value
+
+    Raises
+    -------
+    DaskPipesException
+        If function result length does not match expected number outputs defined in node.outputs
+        If function result dictionary keys does not match keys defined in node node.outputs
     """
     expected_result: List[ReturnDescription] = node.outputs
     expected_keys = [i.name for i in expected_result]
@@ -88,12 +98,18 @@ class PipelineRun:
         Called multiple times for same downstream_args
         Checks that val is iterable
         Extend downstream_args[downstream_slot] with iterable val and run checks
-        :param downstream_args:
-        :param downstream_slot:
-        :param val: iterable
-        :param node:
-        :param upstream_slot:
-        :return:
+
+        Parameters
+        ----------
+        downstream_args
+        downstream_slot
+        val
+        node
+        upstream_slot
+
+        Returns
+        -------
+
         """
         # Create arguments list if it does not exist
         if downstream_slot not in downstream_args:
@@ -113,12 +129,18 @@ class PipelineRun:
         Accumulates key-word parameters in downstream_args dictionary
         Checks for duplicate names, val type to be some kind of mapping
         Updates downstream_args[downstream_slot] with val and run checks
-        :param downstream_args:
-        :param downstream_slot:
-        :param val:
-        :param node:
-        :param upstream_slot:
-        :return:
+
+        Parameters
+        ----------
+        downstream_args
+        downstream_slot
+        val
+        node
+        upstream_slot
+
+        Returns
+        -------
+
         """
         # Create arguments dict if it does not exist
         if downstream_slot not in downstream_args:
@@ -144,12 +166,17 @@ class PipelineRun:
         Assigns downstream argument to specific value
         Checks that this parameter was not assigned before
         and check for absence of already existing value
-        :param downstream_args:
-        :param downstream_slot:
-        :param val: any value
-        :param node: Used for exception message
-        :param upstream_slot: Used for exception message
-        :return:
+
+        Parameters
+        ----------
+        downstream_args
+        downstream_slot
+        val
+            any value
+        node
+            Used for exception message
+        upstream_slot
+            Used for exception message
         """
         if downstream_slot in downstream_args:
             raise DaskPipesException(
@@ -174,15 +201,24 @@ class PipelineRun:
             if upstream slot is not variadic
             - appends value to already existing list or dictionary of values
 
-        :param downstream_args: dictionary of values to add current value into
-        :param upstream_kind: upstream parameter kind
-        :param upstream_slot: upstream slot name - passed explicitly to allow neat exception message
-        :param downstream_kind: downstream parameter kind
-        :param downstream_slot: downstream slot name - passed explicitly as in case of variadic downstream parameter,
-        list or dictionary will be created
-        :param val: value to add
-        :param node: Optional for exception printing
-        :return: None
+
+        Parameters
+        ----------
+        downstream_args
+            dictionary of values to add current value into
+        upstream_kind
+            upstream parameter kind
+        upstream_slot
+            upstream slot name - passed explicitly to allow neat exception message
+        downstream_kind
+            downstream parameter kind
+        downstream_slot
+            downstream slot name - passed explicitly as in case of variadic downstream parameter,
+            list or dictionary will be created
+        val : Any
+            value to add
+        node : optional, NodeBase
+            Optional for exception printing
         """
 
         # Properly handle variadic return arguments
@@ -215,9 +251,17 @@ class PipelineRun:
     def _populate_node_inputs(self, node: NodeBase, node_result: Any):
         """
         Assign values to downstream nodes' inputs
-        :param node: Node to get downstream from
-        :param node_result: fit or transform return value
-        :return: None
+
+        Parameters
+        ----------
+        node
+            Node to get downstream from
+        node_result
+            fit or transform return value
+
+        Returns
+        -------
+
         """
 
         node_result_dict: Dict[str, Any] = _parse_node_output(node, node_result)
@@ -311,7 +355,6 @@ class PipelineRun:
                  transform_leaf_nodes=False):
         """
         Run pipeline computation
-        :return:
         """
         if self._computed:
             raise DaskPipesException("Run already computed")
@@ -323,7 +366,7 @@ class PipelineRun:
 
         self._set_inputs(self.node_inputs, graph.inputs)
 
-        for node in VertexWidthFirst(graph):
+        for node in PipelineWidthFirstIterator(graph):
             node: NodeBase
             try:
                 self._compute_node(
@@ -344,6 +387,74 @@ class PipelineRun:
 
     def __repr__(self):
         return 'PipelineRun<{}>'.format(self.run_id[:5])
+
+
+class PipelineWidthFirstIterator:
+    """
+    Iterator of pipeline nodes
+    Iterates width-first by edge direction and node dependencies
+
+    Vertex is visited only if all of its upstream vertices and dependencies are visited
+    """
+
+    def __init__(self,
+                 graph,
+                 starting_nodes=None):
+        """
+        Initialize iterator
+
+        Parameters
+        -----------------------------
+        graph : Pipeline
+            Pipeline to itearte
+        starting_nodes : Optional[Iterable]
+            Vertices to start iteration from
+            if None (default) - starts iteration from vertices with no upstream dependencies
+
+        Raises
+        --------------------
+        ValueError
+            When graph does not root vertices
+
+        """
+
+        self.seen_nodes = set()
+        self.all_nodes = set(graph.node_dict.values())
+
+        # Initialise next nodes list
+        if starting_nodes:
+            self.next_nodes = [i for i in starting_nodes]
+        else:
+            self.next_nodes = list()
+            for node in self.all_nodes:
+                if self._node_ready(node):
+                    self.next_nodes.append(node)
+            if len(self.next_nodes) == 0:
+                raise ValueError("Graph does not have root vertices")
+
+    def _node_ready(self, node):
+        for e in node.get_upstream():
+            if e.upstream not in self.seen_nodes:
+                return False
+        for dependency_name, dependency_node in node.iter_valid_dependencies():
+            if dependency_node not in self.seen_nodes:
+                return False
+        return True
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if len(self.next_nodes) == 0:
+            raise StopIteration()
+        next_vertex = self.next_nodes[0]
+        del self.next_nodes[0]
+        self.seen_nodes.add(next_vertex)
+
+        for node in self.all_nodes.difference(self.seen_nodes).difference(self.next_nodes):
+            if self._node_ready(node):
+                self.next_nodes.append(node)
+        return next_vertex
 
 
 class Pipeline(PipelineBase):
@@ -368,9 +479,6 @@ class Pipeline(PipelineBase):
     def _fit(node: NodeBase, node_input):
         """
         Helper function used for fit call and dumping params
-        :param node:
-        :param node_input:
-        :return:
         """
         node_input = deepcopy(node_input)
         return node.fit(*node_input[0], **node_input[1])
@@ -379,9 +487,6 @@ class Pipeline(PipelineBase):
     def _transform(node: NodeBase, node_input):
         """
         Helper function, used for transform call and dumping outputs
-        :param node:
-        :param node_input:
-        :return:
         """
         node_input = deepcopy(node_input)
         return node.transform(*node_input[0], **node_input[1])
@@ -417,9 +522,20 @@ class Pipeline(PipelineBase):
         """
         Main method for fitting pipeline.
         Sequentially calls fit and transform in width-first order
-        :param args: pipeline positional input to pass to input nodes
-        :param kwargs: pipeline key-word input to  pass to input nodes
-        :return: self
+
+        Parameters
+        ----------
+        args
+            pipeline positional input to pass to input nodes
+        run_id : optional, str
+            run identifier string
+        kwargs
+            pipeline key-word input to  pass to input nodes
+
+        Returns
+        -------
+        run : PipelineRun
+            computed pipeline run
         """
         # Parse pipeline arguments to arguments of specific nodes
         node_args = self._parse_arguments(*args, **kwargs)
@@ -443,10 +559,22 @@ class Pipeline(PipelineBase):
     def transform(self, *args, run_id=None, **kwargs):
         """
         Method for transforming based on previously fitted parameters
-        :param args: pipeline positional input to pass to input nodes
-        :param kwargs: pipeline key-word input to  pass to input nodes
-        :return: dictionary of datasets, or single dataset.
-        Output of nodes that was not piped anywhere
+
+
+        Parameters
+        ----------
+        args
+            pipeline positional input to pass to input nodes
+        run_id : str, optional
+            pipeline run identifier
+        kwargs
+            pipeline key-word input to  pass to input nodes
+
+        Returns
+        -------
+        run: PipelineRun
+            computed pipeline run containing all node outputs
+
         """
         # Parse pipeline arguments to arguments of specific nodes
         node_args = self._parse_arguments(*args, **kwargs)

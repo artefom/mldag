@@ -3,7 +3,7 @@ import inspect
 import os
 import shutil
 from collections import namedtuple
-from typing import Union, Dict, Any, Callable, List, Type, TYPE_CHECKING
+from typing import Union, Dict, Any, Callable, List, Type
 
 import dask.dataframe as dd
 import numpy as np
@@ -11,12 +11,13 @@ import yaml
 
 from dask_pipes.exceptions import DaskPipesException
 
-if TYPE_CHECKING:
-    pass
-
 __all__ = ['read_file', 'dump_yaml', 'load_yaml', 'cleanup_empty_dirs', 'try_create_dir', 'import_class', 'is_int',
            'assert_subclass', 'get_arguments_description', 'get_return_description',
-           'ReturnDescription', 'is_categorical', 'replace_signature', 'to_snake_case']
+           'ReturnDescription', 'is_categorical', 'replace_signature', 'to_snake_case',
+           'INSPECT_EMPTY_PARAMETER']
+
+# noinspection PyProtectedMember
+INSPECT_EMPTY_PARAMETER = inspect._empty
 
 VALIDATE_SUBCLASSES = False
 
@@ -32,12 +33,21 @@ def to_snake_case(text):
 def replace_signature(func, sign, doc=None):
     """
     Return wrapped function 'func' with specific signature 'sign' and doc string 'doc'
-    :param func: Function to wrap
-    :param sign: Signature to use
-    :param doc: Doc string to use
-    :return:
-    """
 
+    Parameters
+    ----------
+    func
+        Function to wrap
+    sign
+        Signature to use
+    doc
+        Doc string to use
+
+    Returns
+    -------
+    func_w
+        function wrapper
+    """
     def wrapped(*args, **kwargs):
         return func(*args, **kwargs)
 
@@ -85,7 +95,7 @@ def get_return_description(func: Callable) -> List[ReturnDescription]:
                 var_type = v[1]
             elif isinstance(v, str):
                 var_name = v
-                var_type = inspect._empty
+                var_type = INSPECT_EMPTY_PARAMETER
             else:
                 raise NotImplementedError()
             if var_name in set((i[0] for i in rv)):
@@ -95,7 +105,7 @@ def get_return_description(func: Callable) -> List[ReturnDescription]:
     elif isinstance(return_type, dict):
         return [ReturnDescription(name=k, type=v, description=None) for k, v in return_type.items()]
     elif isinstance(return_type, str):
-        return [ReturnDescription(name=return_type, type=inspect._empty, description=None)]
+        return [ReturnDescription(name=return_type, type=INSPECT_EMPTY_PARAMETER, description=None)]
     else:
         return [ReturnDescription(name=RETURN_UNNAMED, type=return_type, description=None)]
 

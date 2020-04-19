@@ -1,4 +1,5 @@
 import inspect
+from collections import defaultdict
 from types import MethodType
 from typing import List, Optional, Tuple, Any, Dict, TYPE_CHECKING, Union
 
@@ -23,7 +24,7 @@ from dask_pipes.utils import (
     ReturnDescription,
     assert_subclass,
 )
-from dask_pipes.utils import replace_signature, to_snake_case
+from dask_pipes.utils import replace_signature, to_snake_case, INSPECT_EMPTY_PARAMETER
 
 if TYPE_CHECKING:
     pass
@@ -241,6 +242,7 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         super().__init__()
 
         self.name = name  # Name used as node unique identifier inside graph
+        self._meta = defaultdict(dict)  # Used to store metadata by pipeline mixins
 
         # Notice: Dependencies are not regular edges
         # Node can depend on any other object
@@ -262,6 +264,9 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         """
         if self.dependencies is None:
             self.dependencies = dict()
+        if not isinstance(node, NodeBase):
+            raise DaskPipesException("Only {} can be dependencies. {} is instance of {}".format(
+                NodeBase.__class__.__name__, node, node.__class__.__name__))
         self.dependencies[name] = node
 
     def remove_dependency(self, name):
@@ -292,8 +297,12 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         """
         if self.dependencies:
             for dep_name, dep in self.dependencies.items():
-                if isinstance(dep, NodeBase) and dep.graph == self.graph:
+                assert isinstance(dep, NodeBase)
+                if dep.graph == self.graph:
                     yield dep_name, dep
+                else:
+                    raise DaskPipesException("Dependency {} of {} does not belong to same graph ({})".format(
+                        dep, self, self.graph))
 
     def get_default_name(self):
         """
@@ -413,7 +422,7 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         assert_subclass(node, NodeBase)
 
     def get_upstream(self):
-        return self.graph.get_upstream_edges()
+        return self.graph.get_upstream_edges(self)
 
     def set_upstream(self, other,
                      upstream_slot: Optional[str] = None,
@@ -885,6 +894,7 @@ class TransformNode(NodeBase):
         self._node = node
 
     def fit(self, *args, **kwargs):
+        # Do not fit when transforming
         pass
 
     def transform(self, *args, **kwargs):
@@ -1049,10 +1059,12 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
     @property
     def vertices(self) -> List[NodeBase]:
+        # noinspection PyTypeChecker
         return super().vertices
 
     @property
     def edges(self) -> List[NodeConnection]:
+        # noinspection PyTypeChecker
         return super().edges
 
     @staticmethod
@@ -1249,8 +1261,10 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
         To add input node, use set_input
 
-        :param node: node to unset as output
-        :return:
+        Parameters
+        ----------
+        node : NodeBase
+            node to unset as output
         """
         self.validate_vertex(node)
         # Find inputs to remove
@@ -1258,6 +1272,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         self._update_fit_transform_signatures()
 
     def remove_output(self, name):
+        # TODO: implement output deletion
         raise NotImplementedError()
 
     def set_output(self, name: str, upstream_node: NodeBase, upstream_slot: Optional[str] = None,
@@ -1390,7 +1405,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         if len(self.inputs) > 0:
             new_params, param_downstream_mapping = get_input_signature(self)
             self._param_downstream_mapping = param_downstream_mapping
-            return_annotation = self.__class__.fit.__annotations__.get('return', inspect._empty)
+            return_annotation = self.__class__.fit.__annotations__.get('return', INSPECT_EMPTY_PARAMETER)
 
             set_fit_signature(self, inspect.Signature(
                 parameters=new_params,
@@ -1439,7 +1454,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
         if downstream_slot is None:
             downstream_inputs = downstream.inputs
-            slots_no_default = [i for i in downstream_inputs if i.default == inspect._empty]
+            slots_no_default = [i for i in downstream_inputs if i.default == INSPECT_EMPTY_PARAMETER]
             if len(slots_no_default) > 1:
                 raise DaskPipesException(
                     "{} has multiple inputs, cannot infer downstream_slot. "

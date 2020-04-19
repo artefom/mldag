@@ -27,9 +27,21 @@ class VertexBase:
     @staticmethod
     def validate(vertex):
         """
-        :param vertex:
-        :type vertex: VertexBase
-        :return:
+        Validates that vertex is of proper class
+
+        Parameters
+        ----------
+        vertex
+            Vertex to validate
+
+        Returns
+        -------
+
+        Raises
+        ------
+        DaskPipesException
+            If vertex is not subclass of VertexBase
+
         """
         assert_subclass(vertex, VertexBase)
 
@@ -65,10 +77,29 @@ class VertexBase:
         Also, two vertices from different graphs cannot be connected
         When one of two vertices subject to connection does not have graph assigned, it propagates from
         vertex with assigned graph
-        :param other: Vertex to connect to
-        :type other: VertexBase
-        :param upstream: direction of connections upstream: other -> this; downstream: this -> other
-        :return:
+
+        Parameters
+        ----------
+        other : VertexBase
+            vertex tp connect to
+        upstream : bool
+            true if upstream direction
+            direction of connections upstream: other -> this; downstream: this -> other
+        args
+            Additional connection arguments, passed to graph.connect
+        kwargs
+            Additional connection key-word arguments, passed to graph.connect
+
+        Returns
+        -------
+
+        Raises
+        ------
+        DaskPipesException
+            if vertex already belongs to another graph
+        DaskPipesException
+            If vertex is not subclass of VertexBase
+
         """
         VertexBase.validate(other)
         if self.graph is not None and other.graph is not None:
@@ -91,11 +122,26 @@ class VertexBase:
     def _remove_relationship(self, other, upstream: bool):
         """
         General method for removing connections between two vertices of same graph
-        :param other: vertex to remove connection with
-        :type other: VertexBase
-        :param upstream: kind of connection to remove
-        :raises: DaskPipesException if two vertices are already disconnected
-        :return:
+
+        Parameters
+        ----------
+        other : VertexBase
+            vertex to remove connection with
+        upstream : bool
+            kind of connection to remove
+            upstream - true
+            downstream - false
+
+        Returns
+        -------
+
+        Raises
+        ------
+        DaskPipesException
+            if vertex already belongs to another graph
+        DaskPipesException
+            If vertex is not subclass of VertexBase
+
         """
         VertexBase.validate(other)
         if upstream:
@@ -105,48 +151,99 @@ class VertexBase:
 
     def set_upstream(self, other, *args, **kwargs):
         """
-
         Create connection:
-            THIS <<- OTHER
+        THIS <<- OTHER
 
-        :param other: Vertex to connect to
-        :type other: VertexBase
-        :return:
+        Parameters
+        ----------
+        other : VertexBase
+            vertex to connect to
+        args
+            Additional connection arguments, passed to graph.connect
+        kwargs
+            Additional connection key-word arguments, passed to graph.connect
+
+        Returns
+        -------
+
+        Raises
+        ------
+        DaskPipesException
+            if vertex already belongs to another graph
+        DaskPipesException
+            If vertex is not subclass of VertexBase
+
         """
         self._set_relationship(other, upstream=True, *args, **kwargs)
 
     def remove_upstream(self, other):
         """
         Remove connection:
-            THIS <</- OTHER
+        THIS <</- OTHER
 
-        :param other: Vertex to remove connection with
-        :type other: VertexBase
-        :return:
+        Parameters
+        ----------
+        other : VertexBase
+            Vertex to remove connection with
+
+        Returns
+        -------
+
+        Raises
+        ------
+        DaskPipesException
+            if vertex already belongs to another graph
+        DaskPipesException
+            If vertex is not subclass of VertexBase
+
         """
         self._remove_relationship(other, upstream=True)
 
     def set_downstream(self, other, *args, **kwargs):
         """
-
         Create connection:
-            THIS ->> OTHER
+        THIS ->> OTHER
 
-        :param other: Vertex to connect to
-        :type other: VertexBase
-        :return:
+        Parameters
+        ----------
+        other : VertexBase
+            Vertex to connect to
+        args
+            Additional connection arguments, passed to graph.connect
+        kwargs
+            Additional connection key-word arguments, passed to graph.connect
+        Returns
+        -------
+
+        Raises
+        ------
+        DaskPipesException
+            if vertex already belongs to another graph
+        DaskPipesException
+            If vertex is not subclass of VertexBase
+
         """
         self._set_relationship(other, upstream=False, *args, **kwargs)
 
     def remove_downstream(self, other):
         """
-
         Remove connection:
-            THIS -/>> OTHER
+        THIS -/>> OTHER
 
-        :param other: Vertex to remove connection with
-        :type other: VertexBase
-        :return:
+        Parameters
+        ----------
+        other : VertexBase
+            Vertex to remove connection with
+
+        Returns
+        -------
+
+        Raises
+        ------
+        DaskPipesException
+            if vertex already belongs to another graph
+        DaskPipesException
+            If vertex is not subclass of VertexBase
         """
         self._remove_relationship(other, upstream=False)
 
@@ -174,23 +271,72 @@ class EdgeBase:
     @staticmethod
     def validate(edge):
         """
-        :param edge:
-        :type edge: EdgeBase
-        :return:
+
+        Parameters
+        ----------
+        edge : EdgeBase
+            edge to validate
+
+        Returns
+        -------
+
+        Raises
+        -------
+        DaskPipesException
+            if edge is not subclass of EdgeBase
+
         """
+
         assert_subclass(edge, EdgeBase)
 
     def to_dict(self):
+        """
+        Serialise current edge as dictionary
+        Returns
+        -------
+        dict : dict
+            {'v1': vertex 1 id, 'v2': vertex 2 id}
+
+        """
         return {'v1': self._v1._id, 'v2': self._v2._id}
 
     @classmethod
     def params_from_dict(cls, graph, d):
+        """
+        Get vertex parameters from dictionary
+
+        Parameters
+        ----------
+        graph : Graph
+            graph to extract vertices by id from
+        d : dict
+            Dictionary serialized by to_dict()
+
+        Returns
+        -------
+
+        """
         v1 = graph._vertices[d['v1']]
         v2 = graph._vertices[d['v2']]
         return (v1, v2), {}
 
     @classmethod
     def from_dict(cls, graph, d):
+        """
+        Create edge from dictionary
+
+        Parameters
+        ----------
+        graph : Graph
+            Graph to get vertices by id from
+        d : dict
+            Serialized dictionary
+
+        Returns
+        -------
+        edge: EdgeBase
+            EdgeBase instance added to graph
+        """
         args, kwargs = cls.params_from_dict(graph, d)
         return cls(*args, **kwargs)
 
@@ -230,7 +376,13 @@ class EdgeBase:
     def _sanity_check(self):
         """
         Run sanity checks and assign graph to current edge if both vertices have graph assigned
-        :return:
+
+        Returns
+        -------
+
+        DaskPipesException
+            If current edge and it's vertices belong to different graphs
+            If vertices belong to different graphs
         """
         if self.graph is not None and (self._v1.graph is not None or self._v2.graph is not None):
             if self.graph is not self._v1.graph:
@@ -249,9 +401,11 @@ class EdgeBase:
     def upstream(self, vertex):
         """
         Assign upstream vertex of this edge
-        :param vertex: vertex to set upstream
-        :type vertex: VertexBase
-        :return:
+
+        Parameters
+        ----------
+        vertex : VertexBase
+             vertex to set upstream
         """
         VertexBase.validate(vertex)
         if self._graph is not None:
@@ -270,9 +424,11 @@ class EdgeBase:
     def downstream(self, vertex):
         """
         Assign downstream vertex of this edge
-        :param vertex: vertex to set downstream
-        :type  vertex: VertexBase
-        :return:
+
+        Parameters
+        ----------
+        vertex : VertexBase
+            vertex to set downstream
         """
         VertexBase.validate(vertex)
         if self._graph is not None:
@@ -285,50 +441,44 @@ class EdgeBase:
 
 
 class VertexWidthFirst:
+    """
+    Graph width-first iterator
+    """
 
-    def __init__(self, graph, starting_vertices=None, how='width-first'):
+    def __init__(self, graph, starting_vertices=None):
         """
-        Pipeline Iterator
-        :param graph:
-        :type graph: Graph
-        :param starting_vertices:
-        :type starting_vertices: Optional[ List[VertexBase] ]
-        :param how: one of 'width-first', 'depth-first'
+        Graph Width-First iterator
+
+        Parameters
+        ----------
+        graph : Graph
+            graph to iterate
+        starting_vertices : optional, Iterable
+            starting vertices to begin iteration from
         """
         self.pipeline = graph
-        self.how = how
         self.seen = set()
         self.next_vertices = starting_vertices
 
-        if self.how == 'width-first':
-            if self.next_vertices is None:
-                self.next_vertices = list(self.pipeline.get_root_vertices())
-                if len(self.next_vertices) == 0:
-                    raise DaskPipesException("Graph has no root vertices, specify starting vertices explicitly: "
-                                             "GraphIter(pipeline, next_vertices = [...])")
-            self.seen.update(self.next_vertices)
-        elif self.how == 'depth-first':
-            raise NotImplementedError()
-        else:
-            raise DaskPipesException("Unknown iterator order: '{}'".format(self.how))
+        if self.next_vertices is None:
+            self.next_vertices = list(self.pipeline.get_root_vertices())
+            if len(self.next_vertices) == 0:
+                raise DaskPipesException("Graph has no root vertices, specify starting vertices explicitly: "
+                                         "GraphIter(pipeline, next_vertices = [...])")
+        self.seen.update(self.next_vertices)
 
     def __iter__(self):
         return self
 
     def __next__(self):
-        if self.how == 'width-first':
-            if len(self.next_vertices) == 0:
-                raise StopIteration()
-            next_vertex = self.next_vertices[0]
-            del self.next_vertices[0]
-            downstream_vertices = set(self.pipeline.get_downstream_vertices(next_vertex)).difference(self.seen)
-            for v in downstream_vertices:
-                self.next_vertices.append(v)
-            self.seen.update(downstream_vertices)
-        elif self.how == 'depth-first':
-            raise NotImplementedError()
-        else:
-            raise DaskPipesException("Unknown iterator order: '{}'".format(self.how))
+        if len(self.next_vertices) == 0:
+            raise StopIteration()
+        next_vertex = self.next_vertices[0]
+        del self.next_vertices[0]
+        downstream_vertices = set(self.pipeline.get_downstream_vertices(next_vertex)).difference(self.seen)
+        for v in downstream_vertices:
+            self.next_vertices.append(v)
+        self.seen.update(downstream_vertices)
         return next_vertex
 
 
@@ -361,31 +511,89 @@ class Graph:
     def connect(self, upstream: VertexBase, downstream: VertexBase, *args, **kwargs) -> EdgeBase:
         """
         Connect two vertices together
-        :param upstream: vertex to set upstream
-        :param downstream: vertex to set downstream
-        :param args: params passed to edge
-        :param kwargs: params passed to edge
-        :return: created edge
+
+        Parameters
+        ----------
+        upstream : VertexBase
+            vertex to set upstream
+        downstream : VertexBase
+            vertex to set downstream
+        args
+            positional arguments passed to edge
+        kwargs
+            key-word arguments passed to edge
+
+        Returns
+        -------
+
         """
         edge = EdgeBase(upstream=upstream, downstream=downstream)
         return self.add_edge(edge)
 
     def disconnect(self, v1: VertexBase, v2: VertexBase) -> EdgeBase:
         """
-        Remove connection between vertex
-        :param v1: upstream vertex of connection to remove
-        :param v2: downstream vertex of connection to remove
-        :return: removed edge
+        Remove connection between vertices
+
+        Parameters
+        ----------
+        v1 : VertexBase
+            upstream vertex of connection
+        v2 : VertexBase
+            downstream vertex of connection
+
+        Returns
+        -------
+        edge : EdgeBase
+            removed edge
+
+        Raises
+        -------
+        DaskPipesException
+            If edge does not belong to current graph
         """
         return self.remove_edge(self.get_edge(v1, v2))
 
     def get_downstream_edges(self, v: VertexBase) -> List[EdgeBase]:
+        """
+        Get list of downstream edges of vertex
+        Parameters
+        ----------
+        v : VertexBase
+            upstream vertex
+
+        Returns
+        -------
+        edges: List[EdgeBase]
+            list of downstream edges
+
+        Raises
+        -------
+        DaskPipesException
+            If v does not belong to current graph
+        """
         self.validate_vertex(v)
         if v._id not in self._vertices or v.graph is not self or self._vertices[v._id] is not v:
             raise DaskPipesException("{} is not in graph".format(v))
         return [self._edges[i] for i in self._downstream_edges[v._id]]
 
     def get_upstream_edges(self, v: VertexBase) -> List[EdgeBase]:
+        """
+        Get list of upstream edges of vertex
+        Parameters
+        ----------
+        v : VertexBase
+            downstream vertex
+
+        Returns
+        -------
+        edges : List[EdgeBase]
+            list of upstream edges
+
+        Raises
+        -------
+        DaskPipesException
+            If v does not belong to current graph
+        """
         self.validate_vertex(v)
         if v._id not in self._vertices or v.graph is not self or self._vertices[v._id] is not v:
             raise DaskPipesException("{} is not in graph".format(v))
@@ -395,8 +603,24 @@ class Graph:
         """
         Add edge to graph
         edge must already have vertices assigned
-        :param edge: edge to add
-        :return: added edge
+
+        Parameters
+        -------
+        edge : EdgeBase
+            edge to add
+        edge_id
+
+        Returns
+        -------
+        edge : EdgeBase
+            added edge
+
+        Raises
+        -------
+        DaskPipesException
+            If edge is not subclass of EdgeBase
+            If edge already belongs to another graph
+            If edge vertices do not belong to same graph as edge
         """
         self.validate_edge(edge)
         if edge._graph is not None:
@@ -424,6 +648,26 @@ class Graph:
         return edge
 
     def get_edges(self, v1: VertexBase, v2: VertexBase) -> List[EdgeBase]:
+        """
+        Get list of all edges between v1 as upstream and v2 as downstream
+        Parameters
+        ----------
+        v1 : VertexBase
+            upstream vertex
+        v2 : VertexBase
+            downstream vertex
+
+        Returns
+        -------
+        edges : List[EdgeBase]
+            list of connecting edges
+
+        Raises
+        -------
+        DaskPipesException
+            If either v1 or v2 are not subclass of VertexBase
+            If either v1 or v2 do not belong to current graph
+        """
         self.validate_vertex(v1)
         self.validate_vertex(v2)
         if v1._graph is not self or v2._graph is not self:
@@ -439,31 +683,60 @@ class Graph:
 
     def get_edge(self, v1: VertexBase, v2: VertexBase) -> EdgeBase:
         """
-        Get edge by vertex
-        :param v1: upstream vertex of edge
-        :param v2: downstream vertex of edge
-        :raises: DaskPipesException if edge not found
-        :return: found edge
+        Get single edge between v1 as upstream and v2 as downstream
+        Parameters
+        ----------
+        v1 : VertexBase
+            upstream vertex
+        v2 : VertexBase
+            downstream vertex
+
+        Returns
+        -------
+        edge : EdgeBase
+            connecting edge
+
+        Raises
+        -------
+        DaskPipesException
+            If either v1 or v2 are not subclass of VertexBase
+            If either v1 or v2 do not belong to current graph
+            If edge v1->v2 does not exist
+            If there are multiple edges v1->v2
         """
-        # TODO: REMOVE
         self.validate_vertex(v1)
         self.validate_vertex(v2)
         if v1._graph is not self or v2._graph is not self:
             raise DaskPipesException(
                 "Tried to get edge between vertices ({}), ({}) "
                 "that do not belong to current graph ({})".format(v1, v2, self))
-        try:
-            return self._edges[next((i for i in self._downstream_edges[v1._id]
-                                     if self._edges[i].downstream._id == v2._id))]
-        except StopIteration:
+        connecting_edges = [i for i in self._downstream_edges[v1._id]
+                            if self._edges[i].downstream._id == v2._id]
+        if len(connecting_edges) == 0:
             raise DaskPipesException(
                 "Edge ({}), ({}) does not exist".format(v1, v2)) from None
+        elif len(connecting_edges) > 1:
+            raise DaskPipesException(
+                "There are multiple edges connecting {} {}. use get_edges instead".format(v1, v2)) from None
+        return self._edges[connecting_edges[0]]
 
     def remove_edge(self, edge: EdgeBase) -> EdgeBase:
         """
-        Remove specific edge from graph
-        :param edge: edge to remove (can be obtained with get_edge)
-        :return: removed edge
+        Remove edge from graph
+
+        Parameters
+        ----------
+        edge : EdgeBase
+            edge to remove (can be obtained with get_edge)
+
+        Returns
+        -------
+            removed edge
+
+        Raises
+        -------
+        DaskPipesException
+            If edge does not belong to current graph
         """
         EdgeBase.validate(edge)
         if edge._graph is not self:
@@ -483,9 +756,27 @@ class Graph:
     def add_vertex(self, vertex: VertexBase, vertex_id=None):
         """
         Add vertex to graph
-        :param vertex: vertex to add
-        :return: added vertex
+
+        Parameters
+        ----------
+        vertex : VertexBase
+            vertex to add
+        vertex_id : optional, int
+            vertex id
+            if not None (default), updates internal vertex id counter
+
+        Returns
+        -------
+        vertex : VertexBase
+            Added vertex vertex
+
+        Raises
+        -------
+        DaskPipesException
+            If vertex already belongs to another graph
+            If vertex is not subclass of VertexBase
         """
+
         self.validate_vertex(vertex)
         if vertex is None:
             raise DaskPipesException("Expected {}, got None".format(VertexBase.__class__.__name__))
@@ -497,7 +788,7 @@ class Graph:
                 # Vertex already added, do nothing
                 if vertex._id is None or vertex._id not in self._vertices or not self._vertices[vertex._id] is vertex:
                     raise DaskPipesException("Vertex corrupted")
-                return
+                return vertex
         vertex._graph = self
         if vertex_id is not None:
             self._vertex_id_counter = max(self._vertex_id_counter, vertex_id + 1)
@@ -513,8 +804,21 @@ class Graph:
     def remove_vertex(self, vertex) -> VertexBase:
         """
         Remove vertex from graph
-        :param vertex: vertex to remove
-        :return: removed vertex
+
+        Parameters
+        ----------
+        vertex : VertexBase
+            vertex to remove
+
+        Returns
+        -------
+        vertex : VertexBase
+            removed vertex
+
+        Raises
+        -------
+        DaskPipesException
+            If vertex is not subclass of VertexBase
         """
         self.validate_vertex(vertex)
         for edge_id in self._downstream_edges[vertex._id]:
@@ -532,8 +836,15 @@ class Graph:
 
         VERTEX <<- upstream vertices (List[VertexBase])
 
-        :param vertex: vertex to get relatives of
-        :return: List[VertexBase] - upstream vertices
+        Parameters
+        ----------
+        vertex : VertexBase
+            vertex to get relatives of
+
+        Returns
+        -------
+        vertices : List[VertexBase]
+            upstream vertices
         """
         self.validate_vertex(vertex)
         if vertex.graph is not self:
@@ -548,8 +859,16 @@ class Graph:
 
         VERTEX ->> downstream vertices (List[VertexBase])
 
-        :param vertex: vertex to get relatives of
-        :return: List[VertexBase] - downstream vertices
+        Parameters
+        ----------
+        vertex : VertexBase
+            vertex to get relatives of
+
+        Returns
+        -------
+        vertices : List[VertexBase]
+            downstream vertices
+
         """
         self.validate_vertex(vertex)
         if vertex.graph is not self:
@@ -562,7 +881,10 @@ class Graph:
         """
         Get list of vertices that do not have upstream (source, input) vertices
 
-        :return:
+        Returns
+        -------
+        vertices : List[VertexBase]
+            list of root vertices
         """
         rv = list()
         for v in self._vertices.values():
@@ -574,7 +896,10 @@ class Graph:
         """
         Get list of vertices that do not have downstream (sink, output) vertices
 
-        :return:
+        Returns
+        -------
+        vertices : List[VertexBase]
+            list of leaf vertices
         """
         rv = list()
         for v in self._vertices.values():
@@ -584,10 +909,12 @@ class Graph:
 
     @property
     def vertices(self) -> List[VertexBase]:
+        # TODO: Remove sorting for better performance
         return sorted(self._vertices.values(), key=lambda x: x._id)
 
     @property
     def edges(self) -> List[EdgeBase]:
+        # TODO: Remove sorting for better performance
         return sorted(self._edges.values(), key=lambda x: x._id)
 
     def __repr__(self):
@@ -595,6 +922,20 @@ class Graph:
 
     @staticmethod
     def vertex_to_dict(vertex):
+        """
+        Serialize vertex as dictionary
+
+        Parameters
+        ----------
+        vertex : VertexBase
+            vertex to serialize
+
+        Returns
+        -------
+        dict : dict
+            Dictionary represeting vertex
+
+        """
         module_name = vertex.__module__
         class_name = vertex.__class__.__name__
         params = vertex.to_dict()
@@ -606,6 +947,19 @@ class Graph:
 
     @staticmethod
     def vertex_from_dict(d):
+        """
+        Create vertex from dictionary
+
+        Parameters
+        ----------
+        d : dict
+            Dictionary, created by vertex_to_dict
+
+        Returns
+        -------
+        vertex : VertexBase
+            Newly created vertex
+        """
         module_name = d['module']
         class_name = d['class']
         params = d['params']
@@ -614,6 +968,19 @@ class Graph:
 
     @staticmethod
     def edge_to_dict(edge):
+        """
+        Serialize edge to dictionary
+
+        Parameters
+        ----------
+        edge : EdgeBase edge to serialize
+
+        Returns
+        -------
+        dict : dict
+            Dictionary representation of edge
+
+        """
         module_name = edge.__module__
         class_name = edge.__class__.__name__
         params = edge.to_dict()
@@ -623,8 +990,22 @@ class Graph:
             'params': params
         }
 
+    # FIXME: Why this function needs graph parameter?
     @staticmethod
     def edge_from_dict(graph, d):
+        """
+        Deserialize edge from dictionary
+
+        Parameters
+        ----------
+        graph : Graph which edge belongs to
+        d : Dictionary, representing edge
+
+        Returns
+        -------
+        edge: EdgeBase
+            Newly created edge
+        """
         module_name = d['module']
         class_name = d['class']
         params = d['params']
@@ -633,8 +1014,12 @@ class Graph:
 
     def to_dict(self):
         """
-        Dump pipeline to dictionary
-        :return:
+        Dump current graph to dictionary
+
+        Returns
+        -------
+        dict : dict
+            Dictionary, representing current pipeline
         """
         vertices = {vertex._id: self.vertex_to_dict(vertex) for vertex in self.vertices}
         edges = {edge._id: self.edge_to_dict(edge) for edge in self.edges}
@@ -651,8 +1036,11 @@ class Graph:
     def from_dict(cls, d):
         """
         Deserialize pipeline from dictionary
-        :param d:
-        :return:
+
+        Parameters
+        ------------
+        d : dict
+            Dictionary representation of graph created by to_dict
         """
 
         module_name = d['module']

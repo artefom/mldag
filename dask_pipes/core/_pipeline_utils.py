@@ -4,7 +4,7 @@ from types import MethodType
 from typing import List, Tuple, Dict, Any, Union, Iterable
 
 from ..exceptions import DaskPipesException
-from ..utils import replace_signature
+from ..utils import replace_signature, INSPECT_EMPTY_PARAMETER
 
 __all__ = ['PipelineInput', 'PipelineOutput', 'get_input_signature',
            'set_fit_signature', 'set_transform_signature',
@@ -54,7 +54,7 @@ def validate_fit_transform(name, attrs,  # noqa: C901
         for param in list(f_sign.parameters.values())[1:]:  # Skip 'self'
             if (param.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD
                 or param.kind == inspect.Parameter.POSITIONAL_ONLY) \
-                    and param.default != inspect._empty:
+                    and param.default != INSPECT_EMPTY_PARAMETER:
                 msg = ("{name}.fit and {name}.transform are not "
                        "allowed to have default arguments ({param.name} = {param.default}). "
                        "Remove default values".format(name=name, param=param))
@@ -177,19 +177,19 @@ def _split_signature_by_kind(parameters) -> Dict[str, List[inspect.Parameter]]:
     for inp in parameters:
         inp: inspect.Parameter
         if inp.kind == inspect.Parameter.POSITIONAL_ONLY:
-            if inp.default == inspect._empty:
+            if inp.default == INSPECT_EMPTY_PARAMETER:
                 params_by_kind['pos_only_no_default'].append(inp)
             else:
                 params_by_kind['pos_only_w_default'].append(inp)
         if inp.kind == inspect.Parameter.VAR_POSITIONAL:
             params_by_kind['var_pos'].append(inp)
         if inp.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD:
-            if inp.default == inspect._empty:
+            if inp.default == INSPECT_EMPTY_PARAMETER:
                 params_by_kind['pos_or_key_no_default'].append(inp)
             else:
                 params_by_kind['pos_or_key_w_default'].append(inp)
         if inp.kind == inspect.Parameter.KEYWORD_ONLY:
-            if inp.default == inspect._empty:
+            if inp.default == INSPECT_EMPTY_PARAMETER:
                 params_by_kind['key_only_no_default'].append(inp)
             else:
                 params_by_kind['key_only_w_default'].append(inp)
@@ -229,9 +229,16 @@ def get_input_signature(pipeline) -> Tuple[List[inspect.Parameter], Dict[str, Li
         Returns inspect.parameter or PipelineInput with new name
         Useful for renaming all variadic parameters of sub-nodes to same standard name i.e.: args, kwargs
         to allow them to merge
-        :param new_name: New name to assign to parameters
-        :param params: List of parameters to rename
-        :return:
+
+        Parameters
+        ----------
+        new_name : str
+            New name to assign to parameters
+        params : List of inspect.Parameter or PipelineInput
+            List of parameters to rename
+
+        Returns
+        -------
         """
         new_param_list = list()
         for param in params:
@@ -333,10 +340,10 @@ def get_input_signature(pipeline) -> Tuple[List[inspect.Parameter], Dict[str, Li
                     kind=param.kind,
                     default=param.default
                     if param.default == old_param.default or param.default is old_param.default
-                    else inspect._empty,
+                    else INSPECT_EMPTY_PARAMETER,
                     annotation=param.annotation
                     if param.annotation == old_param.annotation or param.annotation is old_param.annotation
-                    else inspect._empty
+                    else INSPECT_EMPTY_PARAMETER
                 )
             else:
                 seen_params_order.append(param.name)
