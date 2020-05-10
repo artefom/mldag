@@ -40,9 +40,18 @@ def path_to_uri(path):
 
 def path_from_uri(file_uri):
     """
-    This function returns a str object for the supplied file URI.
-    :param str file_uri: The file URI ...
-    :returns: the absolute path str object
+    Rwturns a str object for the supplied file URI.
+
+    Parameters
+    ----------
+    file_uri : str
+        File URI string
+
+    Returns
+    -------
+    path : str
+        absolute path
+
     """
     path_class = pathlib.PurePath
     windows_path = isinstance(path_class(), pathlib.PureWindowsPath)
@@ -75,43 +84,69 @@ class CacheStorageBase:
     def get_fit_run_id(self, node_name, node_input, code_hash) -> Optional[str]:
         """
         Get fit run id by node_input and code hash
-        :param node_name:
-        :param node_input:
-        :param code_hash:
-        :return: run_id
+
+        Parameters
+        ----------
+        node_name
+        node_input
+        code_hash
+
+        Returns
+        -------
+        run_id
+            Fit run id
+
         """
         raise NotImplementedError()
 
     def get_fit_run_input(self, node_name, run_id) -> Optional[str]:
         """
         Get node fit run input by specific run id
-        :param node_name:
-        :param run_id:
-        :return:
+
+        Parameters
+        ----------
+        node_name
+        run_id
+
+        Returns
+        -------
+
         """
         raise NotImplementedError()
 
     def get_node_output(self, fit_run_id, node_name, node_input) -> Optional[str]:
         """
         Read node_output by fit_run_id, node_name, node_input
-        :param fit_run_id:
-        :param node_name:
-        :param node_input:
-        :return: node_output
+
+        Parameters
+        ----------
+        fit_run_id
+        node_name
+        node_input
+
+        Returns
+        -------
+
         """
         raise NotImplementedError()
 
     def all_transforms(self) -> pd.DataFrame:
         """
+        Get all transform data
 
-        :return: All transform data
+        Returns
+        -------
+
         """
         pass
 
     def all_fits(self) -> pd.DataFrame:
         """
+        Get all fit data
 
-        :return: All fit data
+        Returns
+        -------
+
         """
         pass
 
@@ -369,20 +404,34 @@ class SQLStorage(CacheStorageBase):
                 res.close()
 
 
-def hash_class_code(cls, depth=2, cur_depth=0, class_hash=None, verbose=False):  # noqa: C901
+def hash_class_code(cls, depth=2, _cur_depth=0, _class_hash=None, verbose=False):  # noqa: C901
     """
     Hash code for specific class or object
     If object is passed, also considers sub-classes used by instance
 
     If class is defined in file, uses file class name, file name and modified timestamp for hash
     If class defined at runtime (including jupyter notebooks) uses .__code__ to hash all methods of class
-    :param cls: class or instance of class to get code hash
-    :param depth: Recursion depth. if instance is passed, also hash classes used by this instance recursively.
-    :param cur_depth: Used in recurrent calls
-    :param class_hash: hash object to update or None to create new one
-    :return:
+
+    Parameters
+    ----------
+    cls : class or class instance
+        object to get code hash from
+    depth : int
+        Recursion depth. if instance is passed, also hash classes used by this instance recursively.
+    _cur_depth : int
+        Current recursion depth
+    _class_hash : hash object, optional
+        If specified, _class_hash is updated with new data
+    verbose : bool
+        indicates if printing verbose info desired
+
+    Returns
+    -------
+    hash : str
+        base64 encoded digested hash
+
     """
-    class_hash = class_hash or hashlib.sha256()
+    _class_hash = _class_hash or hashlib.sha256()
 
     # First, try hashing by class name, file name and file modified timestamp
     try:
@@ -395,12 +444,12 @@ def hash_class_code(cls, depth=2, cur_depth=0, class_hash=None, verbose=False): 
             mtime = os.path.getmtime(path)
             class_name = cls.__class__.__name__
         verbose and logger.debug("Cache1: {}".format(mtime))
-        class_hash.update(str(mtime).encode('utf-8'))
+        _class_hash.update(str(mtime).encode('utf-8'))
         verbose and logger.debug("Cache2: {}".format(path))
-        class_hash.update(path.encode('utf-8'))
+        _class_hash.update(path.encode('utf-8'))
         verbose and logger.debug("Cache3: {}".format(class_name))
-        class_hash.update(class_name)
-        return base64.b64encode(class_hash.digest()).decode('ascii')
+        _class_hash.update(class_name)
+        return base64.b64encode(_class_hash.digest()).decode('ascii')
     except (TypeError, FileNotFoundError):
         pass
 
@@ -408,12 +457,12 @@ def hash_class_code(cls, depth=2, cur_depth=0, class_hash=None, verbose=False): 
         try:
             code_bytes = f.__code__.co_code
             verbose and logger.debug("Cache4: {}".format(base64.b64encode(code_bytes)))
-            class_hash.update(code_bytes)
+            _class_hash.update(code_bytes)
             for v in f.__code__.co_consts:
                 val_str = str(v)
                 if v is not None and type(v) in _builtins and '0x' not in val_str:  # Hash primitives but not pointers
                     verbose and logger.debug("Cache5: {}".format(val_str))
-                    class_hash.update(val_str.encode('utf-8'))
+                    _class_hash.update(val_str.encode('utf-8'))
             return True
         except AttributeError:
             return False
@@ -424,7 +473,7 @@ def hash_class_code(cls, depth=2, cur_depth=0, class_hash=None, verbose=False): 
                 val_str = str(v)
                 if v is not None and type(v) in _builtins and '0x' not in val_str:  # Hash primitives but not pointers
                     verbose and logger.debug("Cache6: {}".format(val_str))
-                    class_hash.update(val_str.encode('utf-8'))
+                    _class_hash.update(val_str.encode('utf-8'))
 
     if hasattr(cls, '__code__'):
         if cls != types.FunctionType:  # noqa: E721
@@ -441,7 +490,7 @@ def hash_class_code(cls, depth=2, cur_depth=0, class_hash=None, verbose=False): 
         # Step1 - hash class of instance
         hash_dict(cls.__class__.__dict__)
         # Find classes used by instance of object and hash them too
-        if cur_depth < depth - 1:
+        if _cur_depth < depth - 1:
             sub_classes = set()
             for k, v in cls.__dict__.items():
                 if callable(v):
@@ -452,14 +501,14 @@ def hash_class_code(cls, depth=2, cur_depth=0, class_hash=None, verbose=False): 
                         sub_classes.add(sub_cls)
             sub_class_hashes = set()
             for c in sub_classes:
-                sub_class_hashes.add(hash_class_code(c, depth=depth, cur_depth=cur_depth + 1))
+                sub_class_hashes.add(hash_class_code(c, depth=depth, _cur_depth=_cur_depth + 1))
             # Update in sorted order to make current hash invariant to order
             # (elements in set may have different order from run to run,
             # so without this resulting hash will be different from run to run too)
             for c in sorted(sub_class_hashes):
                 verbose and logger.debug("Cache6: {}".format(c.encode('ascii')))
-                class_hash.update(c.encode('ascii'))
-    return base64.b64encode(class_hash.digest()).decode('ascii')
+                _class_hash.update(c.encode('ascii'))
+    return base64.b64encode(_class_hash.digest()).decode('ascii')
 
 
 class DataFrameLoader(yaml.SafeLoader):

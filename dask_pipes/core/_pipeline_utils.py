@@ -88,9 +88,15 @@ def getcallargs_inverse(func, **callargs) -> Tuple[Iterable[Any], Dict[str, Any]
     Inverse function of inspect.getcallargs
 
     Transforms dictionary of values to (*args, **kwargs)
-    :param func:
-    :param callargs:
-    :return:
+
+    Parameters
+    ----------
+    func
+    callargs
+
+    Returns
+    -------
+
     """
     sign = inspect.signature(func)
     args = list()
@@ -162,8 +168,15 @@ def _split_signature_by_kind(parameters) -> Dict[str, List[inspect.Parameter]]:
     key_only_no_default
     key_only_w_default
     var_key
-    :param parameters:
-    :return: { kind_name: [parameter1, parameter2, ...], ...}
+
+    Parameters
+    ----------
+    parameters
+
+    Returns
+    -------
+    signature_params : dict
+        { kind_name: [parameter1, parameter2, ...], ...}
     """
     params_by_kind = dict()
     params_by_kind['pos_only_no_default'] = list()
@@ -201,8 +214,17 @@ def _split_signature_by_kind(parameters) -> Dict[str, List[inspect.Parameter]]:
 def get_input_signature(pipeline) -> Tuple[List[inspect.Parameter], Dict[str, List[Tuple[Any, str]]]]:  # noqa C901
     """
     Get list of parameters and their mapping to specific node inputs
-    :param pipeline: Pipeline to get input from
-    :return: [parameter1, parameter2, ...], {parameter1.name: [(node,slot_name), ...] }
+
+    Parameters
+    ----------
+    pipeline
+        Pipeline to get input from
+
+    Returns
+    -------
+    signature_parameters : dict
+         [parameter1, parameter2, ...], {parameter1.name: [(node,slot_name), ...] }
+
     """
     # Split input by kind
     original_signature = list(inspect.signature(pipeline.__class__.fit).parameters.values())

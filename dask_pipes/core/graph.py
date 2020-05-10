@@ -775,6 +775,8 @@ class Graph:
         DaskPipesException
             If vertex already belongs to another graph
             If vertex is not subclass of VertexBase
+        ValueError
+            If vertex_id already exists
         """
 
         self.validate_vertex(vertex)
@@ -796,6 +798,8 @@ class Graph:
         else:
             vertex._id = self._vertex_id_counter
             self._vertex_id_counter += 1
+        if vertex._id in self._vertices:
+            raise ValueError("Duplicate vertex id")
         self._vertices[vertex._id] = vertex
         self._downstream_edges[vertex._id] = tuple()
         self._upstream_edges[vertex._id] = tuple()
@@ -819,8 +823,12 @@ class Graph:
         -------
         DaskPipesException
             If vertex is not subclass of VertexBase
+        ValueError
+            If vertex is not part of current graph
         """
         self.validate_vertex(vertex)
+        if vertex._id not in self._vertices or self._vertices[vertex._id] != vertex:
+            raise ValueError("Vertex is not part of current graph")
         for edge_id in self._downstream_edges[vertex._id]:
             self.remove_edge(self._edges[edge_id])
         for edge_id in self._upstream_edges[vertex._id]:

@@ -10,8 +10,14 @@ __all__ = ['Numeric', 'Nullable', 'Categorical', 'Binary']
 def nullable(dataset: dd.DataFrame) -> List[str]:
     """
     Return list of nullable columns
-    :param dataset:
-    :return:
+
+    Parameters
+    ----------
+    dataset
+
+    Returns
+    -------
+
     """
     na_cols = (dataset.isna().sum() > 0)
     if isinstance(na_cols, dd.core.Scalar):
@@ -22,8 +28,14 @@ def nullable(dataset: dd.DataFrame) -> List[str]:
 def numeric(dataset: dd.DataFrame) -> List[str]:
     """
     Get all numeric columns
-    :param dataset:
-    :return:
+
+    Parameters
+    ----------
+    dataset
+
+    Returns
+    -------
+
     """
 
     def is_numeric(col):
@@ -38,8 +50,14 @@ def numeric(dataset: dd.DataFrame) -> List[str]:
 def categorical(dataset: dd.DataFrame) -> List[str]:
     """
     Get all categorical columns
-    :param dataset:
-    :return:
+
+    Parameters
+    ----------
+    dataset
+
+    Returns
+    -------
+
     """
 
     def is_categorical(col):
@@ -51,8 +69,14 @@ def categorical(dataset: dd.DataFrame) -> List[str]:
 def binary(dataset: dd.DataFrame) -> List[str]:
     """
     Return list containing 2 or less values
-    :param dataset:
-    :return:
+
+    Parameters
+    ----------
+    dataset
+
+    Returns
+    -------
+
     """
     counts = {col_name: dataset[col_name].unique().shape[0]
               for col_name in dataset.columns}

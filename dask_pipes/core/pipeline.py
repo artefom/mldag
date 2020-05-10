@@ -46,9 +46,12 @@ __all__ = [
 
 def validate_estimator(obj):
     """
-    Raise DaskPipesException if obj does not have 'fit' and 'transform' methods
-    :param obj: class instance to check
-    :return: None
+    Raises DaskPipesException if obj does not have 'fit' and 'transform' methods
+
+    Parameters
+    ----------
+    obj : class instance
+        class to validate
     """
     if not hasattr(obj, 'fit'):
         raise DaskPipesException("{} must implement fit".format(obj))
@@ -59,8 +62,14 @@ def validate_estimator(obj):
 def is_estimator(obj):
     """
     Check if obj has 'fit' and 'transform' methods
-    :param obj:
-    :return:
+
+    Parameters
+    ----------
+    obj
+
+    Returns
+    -------
+
     """
     return hasattr(obj, 'fit') and hasattr(obj, 'transform')
 
@@ -73,8 +82,13 @@ class NodeSlot:
 
     def __init__(self, node, slot: str):
         """
-        :param node: Node to pipe into (or from)
-        :param slot: Slot to pipe into (or from)
+
+        Parameters
+        ----------
+        node : NodeBase
+            Node to pipe into (or from)
+        slot : str
+            Slot to pipe into (or from)
         """
         if not hasattr(node, 'set_downstream') or not hasattr(node, 'set_upstream'):
             raise DaskPipesException("node {} must implement set_downstream, set_upstream".format(node))
@@ -86,9 +100,14 @@ class NodeSlot:
         """
         self >> other
 
-        :param other: can be one of NodeSlot, NodeBase, else as_node(other) is called.
-        piping to instance of PipelineBase is not supported
-        :return:
+        Parameters
+        ----------
+        other : one of NodeSlot, NodeBase, function or estimator
+            If function or estimator is passed, as_node(other) is called
+            Piping to instance of PipelineBase is not supported
+        Returns
+        -------
+        other
         """
         if isinstance(other, NodeSlot):
             # Seems like we're piping output of current node slot to another node slot
@@ -119,9 +138,15 @@ class NodeSlot:
         """
         self << other
 
-        :param other: can be one of NodeSlot, NodeBase, else as_node(other) is called.
-        piping to instance of PipelineBase is not supported
-        :return:
+        Parameters
+        ----------
+        other : one of NodeSlot, NodeBase, function or estimator
+            If function or estimator is passed, as_node(other) is called
+            Piping to instance of PipelineBase is not supported
+        Returns
+        -------
+        other
+
         """
         if isinstance(other, NodeSlot):
             # Seems like we're piping output of some node slot to current node slot
@@ -366,14 +391,19 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
     def __lshift__(self, other):
         """
         self << other
+        Parameters
+        ----------
+        other : NodeSlot, NodeBase, function or estimator
+            if function or estimator is passed, as_node(other) is called
 
-        See also:
-            NodeSlot.__lshift__
-            PipelineBase.__lshift__
+        Returns
+        -------
+            other
 
-        :param other: can be one of NodeSlot, NodeBase, else as_node(other) is called.
-        piping to instance of PipelineBase is not supported
-        :return:
+        See Also
+        -------
+        NodeSlot.__lshift__
+        PipelineBase.__lshift__
         """
         if isinstance(other, NodeSlot):
             # Seems like we're piping output of some node slot to current node
@@ -393,9 +423,13 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
     def outputs(self) -> List[ReturnDescription]:
         """
         Outputs of an node (parses annotation of .transform function)
-
         Since this is defined in meta, we can get node outputs just based on it's class
-        :return: List of named tuples 'ReturnDescription' with argument name, type and description
+
+        Returns
+        -------
+        outputs : list
+            List of named tuples 'ReturnDescription' with argument name, type and description
+
         """
         return get_return_description(getattr(self, 'transform'))
 
@@ -406,18 +440,34 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         must be equal to parameters of self.transform
 
         Since this is defined in meta, we can get node outputs just based on it's class
-        :return:
+
+        Returns
+        -------
+        inputs : List[inspect.Parameter]
+            list of node inputs
         """
         return get_arguments_description(getattr(self, 'fit'))
 
     @staticmethod
     def validate(node):
         """
+        Raises exception if node is not subclass of NodeBase
+
         Used by Graph to validate vertices when adding them
         Checks that node is valid NodeBase
             > check that node is subclass of NodeBase
-        :param node: Any
-        :return:
+
+        Parameters
+        ----------
+        node : Any
+
+        Returns
+        -------
+
+        Raises
+        -------
+        DaskPipesException
+
         """
         assert_subclass(node, NodeBase)
 
@@ -430,28 +480,33 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         """
         Make other Node upstream of current
         Pipes output of specific slot of upstream node to specific slot of current node
-        Automatically assignes other or self to pipeline of one of them is not assigned
+        Automatically assigns other or self to pipeline of one of them is not assigned
 
-        Example:
+        Parameters
+        ----------
+        other : NodeBase
+        upstream_slot : str, optional
+            upstream node output (name of one of other.outputs) or None
+            f None is passed and upstream has only one output, automatically deducts upstream_slot
+        downstream_slot : str, optional
+            input slot (name of one of self.inputs) or None
+            if None is passed and this node has only one input, automatically deducts downstream_slot
+
+        Examples
+        -------
+
         >>> # Construct pipeline and nodes
-        >>> p = PipelineBase()
-        >>> op1 = DummyNode('op1')
-        >>> op2 = DummyNode('op2')
-        >>>
-        >>> # Assign input for op1 as pipeline input and add it to pipeline
-        >>> p.set_input(op1)
-        >>>
-        >>> # Set upstream node, add op2 to pipeline
-        >>> # input ->> op1 ->> op2
-        >>> op2.set_upstream(op1)
+        ... p = PipelineBase()
+        ... op1 = DummyNode('op1')
+        ... op2 = DummyNode('op2')
+        ...
+        ... # Assign input for op1 as pipeline input and add it to pipeline
+        ... p.set_input(op1)
+        ...
+        ... # Set upstream node, add op2 to pipeline
+        ... # input ->> op1 ->> op2
+        ... op2.set_upstream(op1)
 
-        :param other: Node to set upstream
-        :type other: NodeBase
-        :param upstream_slot: upstream's output (name of one of other.outputs) or None
-        if None is passed and upstream has only one output, automatically deducts upstream_slot
-        :param downstream_slot: this input slot (name of one of self.inputs) or None
-        if None is passed and this node has only one input, automatically deducts upstream_slot
-        :return: None
         """
         super().set_upstream(other, upstream_slot=upstream_slot, downstream_slot=downstream_slot)
 
@@ -466,7 +521,10 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
 
     def is_leaf(self) -> bool:
         """
-        Returns true if vertex has do downstream vertices, else false
+        Returns
+        --------------------
+        is_leaf : bool
+            true if vertex has do downstream vertices, else false
         """
         return len(self.get_downstream()) == 0
 
@@ -705,9 +763,15 @@ class FunctionNode(NodeBase):
         """
         Callable is used only as transform without any persistent functions,
         so this method does not do anything
-        :param args:
-        :param kwargs:
-        :return:
+
+        Parameters
+        ----------
+        args
+        kwargs
+
+        Returns
+        -------
+
         """
         pass
 
@@ -772,9 +836,15 @@ class EstimatorNode(NodeBase):
         """
         Call fit of wrapped estimator with specific args
         Signature of this method is overwritten once estimator property is set
-        :param args:
-        :param kwargs:
-        :return:
+
+        Parameters
+        ----------
+        args
+        kwargs
+
+        Returns
+        -------
+
         """
         self.estimator.fit(*args, **kwargs)
         return self
@@ -783,9 +853,15 @@ class EstimatorNode(NodeBase):
         """
         Call transform of wrapped estimator with specific args
         Signature of this method if overwritten once estimator property is set
-        :param args:
-        :param kwargs:
-        :return:
+
+        Parameters
+        ----------
+        args
+        kwargs
+
+        Returns
+        -------
+
         """
         return self.estimator.transform(*args, **kwargs)
 
@@ -1074,9 +1150,17 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
         Uses node.get_default_name + counter to assure uniqueness
 
-        :param node: node to get name for
-        :param counter:
-        :return:
+        Parameters
+        ----------
+        node : NodeBase
+            node to get name for
+        counter : int
+            integer to use in naming
+
+        Returns
+        -------
+        node_name : str
+            default node name with embedded counter
         """
         default_name = node.get_default_name()
         if counter is None or counter == 0:
@@ -1086,9 +1170,15 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
     def __rshift__(self, other):
         """
         self >> other
-        :param other: can be one of NodeSlot, NodeBase, else as_node(other) is called.
-        piping to instance of PipelineBase is not supported
-        :return:
+
+        Parameters
+        ----------
+        other : NodeSlot, NodeBase, function or estimator
+            if function or estimator is passed as_node(other) is called
+        Returns
+        -------
+        other : NodeBase
+
         """
         if isinstance(other, NodeSlot):
             # Seems like we're trying to pipe input of current pipeline to some node slot
@@ -1112,30 +1202,57 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         self << other
 
         piping to instance of PipelineBase is not supported.
-        Raises NotImplementedError
 
-        :param other: Any
-        :return:
+        Parameters
+        -------------
+        other : Any
+
+        Raises
+        -------------
+        NotImplementedError
         """
         raise NotImplementedError()
 
-    def __getitem__(self, slot):
+    def __getitem__(self, slot_name: str):
         """
         Pipeline['slot']
-        :param slot:
-        :return:
-        """
-        return NodeSlot(self, slot)
 
-    # TODO: rename to add_node
+        Parameters
+        ----------
+        slot_name : str
+            name of pipeline slot to get
+
+        Returns
+        -------
+        slot : NodeSlot
+            pipeline slot
+
+        """
+        return NodeSlot(self, slot_name)
+
     def add_vertex(self, node: NodeBase, vertex_id=None):
         """
         Add vertex node to current pipeline
         To remove vertex (node), use remove_vertex
-        :param node: node to add
-        :param vertex_id: node's id or None (if None - autoincrement) (used for deserialization from disk)
-        :type vertex_id: int
-        :return:
+
+        Parameters
+        ----------
+        node : NodeBase
+        vertex_id : int
+            vertex id to add. Must be unique
+            My be useful when need to specify vertex_id explicitly, e.g. deserialization
+
+        Returns
+        ----------
+        node
+
+        Raises
+        -------
+        DaskPipesException
+            If vertex already belongs to another graph
+            If vertex is not subclass of VertexBase
+        ValueError
+            If vertex_id already exists
         """
         if node.name is None:
             node_name_counter = 0
@@ -1146,15 +1263,30 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
             if self.node_dict[node.name] is not node:
                 raise DaskPipesException("Duplicate name for node {}".format(node))
         self.node_dict[node.name] = node
-        super().add_vertex(node, vertex_id=vertex_id)
+        return super().add_vertex(node, vertex_id=vertex_id)
 
     # TODO: Rename to remove_node
     def remove_vertex(self, node: NodeBase) -> VertexBase:
         """
-        Remove vertex node from pipeline
+        Remove vertex from pipeline
         To add vertex (node), use add_vertex
-        :param node: node to remove (must be in current pipeline)
-        :return:
+
+        Parameters
+        ----------
+        node : NodeBase
+            node to remove, must be part of current pipeline
+
+        Returns
+        -------
+        vertex : VertexBase
+            removed vertex
+
+        Raises
+        -------
+        DaskPipesException
+            If vertex is not subclass of VertexBase
+        ValueError
+            If vertex is not part of current graph
         """
         if node.name is None:
             raise DaskPipesException("Node is unnamed")
@@ -1173,7 +1305,11 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
     def input_parameters(self) -> List[inspect.Parameter]:
         """
         Get list of inspect.parameter without duplicates (same value can be passed to multiple nodes)
-        :return: list of inspect.Parameter for fit function, excluding self
+
+        Returns
+        -------
+        input_parameters : List[inspect.Parameter]
+
         """
         return get_input_signature(self)[0][1:]
 
@@ -1185,7 +1321,11 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
     def output_names(self) -> List[str]:
         """
         Get human-friendly list of output names of .transform() function without detailed info about nodes
-        :return: list of nodes's outputs that have no downstream nodes. Transform output
+
+        Returns
+        ---------
+        output_names : List[str]
+            list of nodes's outputs that have no downstream nodes. Transform output
         """
         return [o.name for o in self.outputs]
 
@@ -1193,8 +1333,12 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         """
         Used by core graph class to check if edge can be added to current graph
         Checks if edge is subclass of NodeConnection
-        :param edge:
-        :return:
+        Parameters
+        ----------
+        edge
+
+        Returns
+        -------
         """
         NodeConnection.validate(edge)
 
@@ -1202,8 +1346,15 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         """
         Used by core graph to check if vertex can be added to current graph
         Checks if vertex is subclass of NodeBase
-        :param vertex:
-        :return:
+
+        Parameters
+        ------------
+        vertex : Any
+
+        Raises
+        ------------
+        DaskPipesException
+            If vertex is not subclass of NodeBase
         """
         NodeBase.validate(vertex)
 
@@ -1215,10 +1366,15 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
         Not implemented
 
-        :param other:
-        :param upstream_slot:
-        :param downstream_slot:
-        :return:
+        Parameters
+        ----------
+        other
+        upstream_slot
+        downstream_slot
+
+        Returns
+        -------
+
         """
         raise NotImplementedError()
 
@@ -1228,10 +1384,15 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         """
         Method, used by NodeSlot to allow using Pipeline in byte-shift notation chains p['X'] >> node1['X']
 
-        :param other:
-        :param upstream_slot:
-        :param downstream_slot:
-        :return:
+        Parameters
+        ----------
+        other
+        upstream_slot
+        downstream_slot
+
+        Returns
+        -------
+
         """
         self.set_input(other, name=upstream_slot, downstream_slot=downstream_slot)
 
@@ -1243,8 +1404,13 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         To remove input piped to specific node, use remove_input_node
         To add input node, use set_input
 
-        :param name:
-        :return:
+        Parameters
+        ----------
+        name
+
+        Returns
+        -------
+
         """
         len_before = len(self.inputs)
         if len_before == 0:
@@ -1341,11 +1507,20 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
         Outputs of node are not set. instead, you can get output of all leaf nodes from PipelineRun class
 
-        :param node: Node to set as pipeline input
-        :param name: Optional. Name of input (default: 'downstream_slot'+'suffix' )
-        :param downstream_slot: Optional. Name of node's input slot. (default: applied recursive for each slot)
-        :param suffix: Optional. used for inferring 'name' parameter
-        :return: None
+        Parameters
+        ----------
+        node
+            Node to set as pipeline input
+        name : str, optional
+            Name of input (default: 'downstream_slot'+'suffix' )
+        downstream_slot : str, optional
+            Name of node's input slot. (default: applied recursive for each slot)
+        suffix : str, optional
+            Used for inferring 'name' parameter
+
+        Returns
+        -------
+
         """
 
         self.validate_vertex(node)
@@ -1400,7 +1575,10 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         """
         Called when input node is added or removed.
         Infers and updates signatures of fit and transform methods for user-friendly hints
-        :return:
+
+        Returns
+        -------
+
         """
         if len(self.inputs) > 0:
             new_params, param_downstream_mapping = get_input_signature(self)
@@ -1435,11 +1613,19 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         used in _set_relationship and therefore in all
         set_upstream, set_downstream methods of all nodes
 
-        :param upstream: node to set upstream
-        :param downstream: node to set downstream
-        :param upstream_slot: slot of upstream node to pass to downstream
-        :param downstream_slot: slot of downstream node to receive data into
-        :return:
+        Parameters
+        ----------
+        upstream
+            node to set upstream
+        downstream
+            node to set downstream
+        upstream_slot
+            slot of upstream node to pass to downstream
+        downstream_slot
+            slot of downstream node to receive data into
+        Returns
+        -------
+
         """
 
         # Infer upstream and downstream objects
@@ -1486,10 +1672,17 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
         If argument has a default value and not provided,
         result dictionary will contain default value for that argument
-        :param fit_params:
-        :param args: fit arguments
-        :param kwargs: fit key-word arguments
-        :return:
+
+        Parameters
+        ----------
+        args
+            fit arguments
+        kwargs
+            fit key-word arguments
+
+        Returns
+        -------
+
         """
 
         fit_params = [param for param in self.input_parameters if param.name in self._param_downstream_mapping]
@@ -1544,9 +1737,17 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         """
         Add NodeConnection to current pipeline
         node_connection must already have assigned upstream and downstream nodes
-        :param node_connection: connection to add
-        :param edge_id: integer id of edge, auto-increment if None (used for deserialization from disk)
-        :return:
+
+        Parameters
+        ----------
+        node_connection
+            connection to add
+        edge_id
+            integer id of edge, auto-increment if None (used for deserialization from disk)
+
+        Returns
+        -------
+
         """
         super().add_edge(node_connection, edge_id=edge_id)
         return node_connection
