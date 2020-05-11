@@ -96,6 +96,19 @@ class RobustCategoriser:
         return self
 
     def transform(self, X, y=None):
+        """
+
+        Parameters
+        ----------
+        X : DataFrame
+            DataFrame to categorize
+        y : Series, optional
+
+        Returns
+        -------
+        X : DataFrame
+            Categorized DataFrame
+        """
         assert y is None
 
         def get_col_transformer(categories, repl_val):

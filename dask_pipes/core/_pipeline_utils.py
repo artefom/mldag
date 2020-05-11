@@ -3,13 +3,16 @@ from collections import namedtuple
 from types import MethodType
 from typing import List, Tuple, Dict, Any, Union, Iterable
 
+import numpydoc.docscrape
+
 from ..exceptions import DaskPipesException
-from ..utils import replace_signature, INSPECT_EMPTY_PARAMETER
+from ..utils import replace_signature, INSPECT_EMPTY_PARAMETER, InputParameter
 
 __all__ = ['PipelineInput', 'PipelineOutput', 'get_input_signature',
            'set_fit_signature', 'set_transform_signature',
            'reset_fit_signature', 'reset_transform_signature',
-           'getcallargs_inverse', 'validate_fit_transform']
+           'getcallargs_inverse', 'validate_fit_transform',
+           'ARGS_PARAM_NAME', 'KWARGS_PARAM_NAME']
 
 # Valid order of parameter types (kind+default flag)
 ARG_ORDER = [
@@ -22,6 +25,9 @@ ARG_ORDER = [
     'key_only_w_default',
     'var_key'
 ]
+
+ARGS_PARAM_NAME = 'args'
+KWARGS_PARAM_NAME = 'kwargs'
 
 
 def validate_fit_transform(name, attrs,  # noqa: C901
@@ -66,21 +72,22 @@ class PipelineInput(namedtuple("_PipelineInput", ['name',
                                                   'downstream_node',
                                                   'default',
                                                   'kind',
-                                                  'annotation'])):
+                                                  'type',
+                                                  'desc'])):
     """
     Analog of inspect.Parameter, but includes reference to downstream node and it's slot
     """
 
     def __str__(self):
         arg_param = inspect.Parameter(name=self.name, kind=self.kind, default=self.default,
-                                      annotation=self.annotation)
-        return "{} -> {}['{}']".format(str(arg_param), self.downstream_node.name, self.downstream_slot)
+                                      annotation=self.type)
+        return str(arg_param)
 
     def __repr__(self):
         return '<{}>'.format(str(self))
 
 
-PipelineOutput = namedtuple("PipelineOutput", ['name', 'upstream_node', 'upstream_slot', 'annotation'])
+PipelineOutput = namedtuple("PipelineOutput", ['name', 'upstream_node', 'upstream_slot', 'type', 'desc'])
 
 
 def getcallargs_inverse(func, **callargs) -> Tuple[Iterable[Any], Dict[str, Any]]:  # noqa C901
@@ -140,12 +147,12 @@ def getcallargs_inverse(func, **callargs) -> Tuple[Iterable[Any], Dict[str, Any]
     return tuple(args), kwargs
 
 
-def set_fit_signature(obj, sign: inspect.Signature):
-    obj.fit = MethodType(replace_signature(obj.__class__.fit, sign), obj)
+def set_fit_signature(obj, sign: inspect.Signature, doc=None):
+    obj.fit = MethodType(replace_signature(obj.__class__.fit, sign, doc=doc), obj)
 
 
-def set_transform_signature(obj, sign: inspect.Signature):
-    obj.transform = MethodType(replace_signature(obj.__class__.transform, sign), obj)
+def set_transform_signature(obj, sign: inspect.Signature, doc=None):
+    obj.transform = MethodType(replace_signature(obj.__class__.transform, sign, doc=doc), obj)
 
 
 def reset_fit_signature(obj):
@@ -211,7 +218,55 @@ def _split_signature_by_kind(parameters) -> Dict[str, List[inspect.Parameter]]:
     return params_by_kind
 
 
-def get_input_signature(pipeline) -> Tuple[List[inspect.Parameter], Dict[str, List[Tuple[Any, str]]]]:  # noqa C901
+def get_new_docstring(pipeline, original_doc, new_parameters: List[inspect.Parameter]):  # noqa: C901
+    # Handle numpy docstrings
+    if original_doc:
+        docstring = numpydoc.docscrape.NumpyDocString(original_doc)
+    else:
+        docstring = dict()
+
+    params_docstrings_orig = {i.name: i for i in docstring['Parameters']}
+
+    parameter_desc = dict()
+    parameter_types = dict()
+
+    for input in pipeline.inputs:
+        if input.desc and input.desc != inspect._empty:
+            if input.name not in parameter_desc:
+                parameter_desc[input.name] = list()
+            if isinstance(input.desc, list):
+                parameter_desc[input.name].extend(input.desc)
+            elif isinstance(input.desc, str):
+                parameter_desc[input.name].append(input.desc)
+            else:
+                raise ValueError("Invalid description: {}".format(input.desc))
+
+        if input.type != inspect._empty:
+            if input.name not in parameter_types:
+                parameter_types[input.name] = list()
+            parameter_types[input.name].append(input.type)
+
+    new_docstring_parameters = list()
+    for param in new_parameters:
+        if param.name in parameter_types or param.name in parameter_desc:
+            new_param_type = ', '.join({
+                str(i.__name__ if isinstance(i, type) else i)
+                for i in parameter_types.get(param.name, [])
+            })
+            new_param_desc = parameter_desc.get(param.name, [])
+
+            new_docstring_parameters.append(numpydoc.docscrape.Parameter(param.name, new_param_type, new_param_desc))
+        elif param.name in params_docstrings_orig:
+            desc_orig = params_docstrings_orig[param.name].desc
+            type_orig = params_docstrings_orig[param.name].type
+            new_docstring_parameters.append(numpydoc.docscrape.Parameter(param.name, type_orig, desc_orig))
+
+    docstring['Parameters'] = new_docstring_parameters
+
+    return docstring
+
+
+def get_input_signature(pipeline):  # noqa: C901
     """
     Get list of parameters and their mapping to specific node inputs
 
@@ -222,12 +277,18 @@ def get_input_signature(pipeline) -> Tuple[List[inspect.Parameter], Dict[str, Li
 
     Returns
     -------
-    signature_parameters : dict
-         [parameter1, parameter2, ...], {parameter1.name: [(node,slot_name), ...] }
+    signature_parameters
+         [parameter1, parameter2, ...]
+    params_downstream
+        {parameter1.name: [(node,slot_name), ...] }
+    fit_docstring
+        Fit's docstring
+    transform_docstring
+        Transform's docstring
 
     """
     # Split input by kind
-    original_signature = list(inspect.signature(pipeline.__class__.fit).parameters.values())
+    original_signature = list(inspect.signature(pipeline.__class__.transform).parameters.values())
     reserved_names = {param.name for param in original_signature}
 
     # Pipeline may contain some custom parameters, take them into account by using original signature
@@ -241,7 +302,15 @@ def get_input_signature(pipeline) -> Tuple[List[inspect.Parameter], Dict[str, Li
         for k, v in _split_signature_by_kind(pipeline.inputs).items():
             # Validate param names
             for param in v:
-                if param.name in reserved_names:
+                if param.kind == inspect.Parameter.VAR_KEYWORD:
+                    if not param.name == KWARGS_PARAM_NAME:
+                        raise ValueError("Variadic keyword arguments must have name '{}'".format(KWARGS_PARAM_NAME))
+                if param.kind == inspect.Parameter.VAR_POSITIONAL:
+                    if not param.name == ARGS_PARAM_NAME:
+                        raise ValueError("Variadic positional arguments must have name '{}'".format(ARGS_PARAM_NAME))
+                if param.name in reserved_names \
+                        and param.kind != inspect.Parameter.VAR_POSITIONAL \
+                        and param.kind != inspect.Parameter.VAR_KEYWORD:
                     raise DaskPipesException(
                         "Parameter name {} is reserved by pipeline's fit signature".format(param.name))
             params_by_kind[k].extend(v)
@@ -264,13 +333,23 @@ def get_input_signature(pipeline) -> Tuple[List[inspect.Parameter], Dict[str, Li
         """
         new_param_list = list()
         for param in params:
+            if isinstance(param, InputParameter):
+                new_param_list.append(
+                    InputParameter(
+                        name=new_name,
+                        kind=param.kind,
+                        default=param.default,
+                        type=param.type,
+                        desc=param.desc,
+                    )
+                )
             if isinstance(param, inspect.Parameter):
                 new_param_list.append(
                     inspect.Parameter(
                         name=new_name,
                         kind=param.kind,
                         default=param.default,
-                        annotation=param.annotation
+                        annotation=param.annotation,
                     )
                 )
             if isinstance(param, PipelineInput):
@@ -281,7 +360,8 @@ def get_input_signature(pipeline) -> Tuple[List[inspect.Parameter], Dict[str, Li
                         downstream_node=param.downstream_node,
                         default=param.default,
                         kind=param.kind,
-                        annotation=param.annotation
+                        type=param.type,
+                        desc=param.desc,
                     )
                 )
         return new_param_list
@@ -292,7 +372,7 @@ def get_input_signature(pipeline) -> Tuple[List[inspect.Parameter], Dict[str, Li
         # Since multiple positional variadic parameters are not allowed
         var_pos_names = {param.name for param in params_by_kind['var_pos']}
         if len(var_pos_names) > 1:
-            params_by_kind['var_pos'] = _rename_params('args', params_by_kind['var_pos'])
+            params_by_kind['var_pos'] = _rename_params(ARGS_PARAM_NAME, params_by_kind['var_pos'])
 
     var_key_names = set()
     if len(params_by_kind['var_key']) > 1:
@@ -300,7 +380,7 @@ def get_input_signature(pipeline) -> Tuple[List[inspect.Parameter], Dict[str, Li
         # Since multiple keyword variadic parameters are not allowed
         var_key_names = {param.name for param in params_by_kind['var_key']}
         if len(var_key_names) > 1:
-            params_by_kind['var_key'] = _rename_params('kwargs', params_by_kind['var_key'])
+            params_by_kind['var_key'] = _rename_params(KWARGS_PARAM_NAME, params_by_kind['var_key'])
 
     # Set priority of parameter types to omit errors
     # Parameter categories are grouped to allow handling parameters with the same name but different categories
@@ -342,7 +422,7 @@ def get_input_signature(pipeline) -> Tuple[List[inspect.Parameter], Dict[str, Li
                     name=param.name,
                     kind=param.kind,
                     default=param.default,
-                    annotation=param.annotation
+                    annotation=param.type
                 ))
             else:
                 new_params.append(param)
@@ -394,4 +474,7 @@ def get_input_signature(pipeline) -> Tuple[List[inspect.Parameter], Dict[str, Li
     for cat in ARG_ORDER:
         rv.extend(params_by_kind[cat])
 
-    return rv, params_downstream
+    fit_docstring = get_new_docstring(pipeline, pipeline.fit.__func__.__doc__, rv)
+    transform_docstring = get_new_docstring(pipeline, pipeline.transform.__func__.__doc__, rv)
+
+    return rv, params_downstream, fit_docstring, transform_docstring

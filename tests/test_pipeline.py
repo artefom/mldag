@@ -3,8 +3,9 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import dask.dataframe as dd
-import dask_pipes as dp
 import pandas as pd
+
+import dask_pipes as dp
 
 TEST_DS: Optional[pd.DataFrame] = None
 
@@ -43,5 +44,25 @@ def test_pipeline():
     assert p.output_names == ['normalized']
 
 
+def test_args():
+    @dp.returns(['some_result'])
+    def foo(a, a_default=None, *var_pos, b, b_default=None, **var_key):
+        return (a, a_default, var_pos, b, b_default, var_key),
+
+    p = dp.Pipeline()
+    a = dp.as_node(foo, name='a')
+
+    p['a'] >> a['a']
+    p['a_default'] >> a['a_default']
+    p['args'] >> a['var_pos']
+    p['b'] >> a['b']
+    p['kwargs'] >> a['var_key']
+    a['some_result'] >> p['result']
+
+    run = p.transform(1, 2, 3, 4, b=10, kwarg=10)
+    assert run.outputs['result'] == (1, 2, (3, 4), 10, None, {'kwarg': 10})
+
+
 if __name__ == '__main__':
     test_pipeline()
+    test_args()

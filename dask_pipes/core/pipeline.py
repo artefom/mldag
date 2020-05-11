@@ -3,6 +3,7 @@ from collections import defaultdict
 from types import MethodType
 from typing import List, Optional, Tuple, Any, Dict, TYPE_CHECKING, Union
 
+import numpydoc.docscrape
 from sklearn.base import BaseEstimator, TransformerMixin
 
 from dask_pipes.core._pipeline_utils import (
@@ -15,16 +16,25 @@ from dask_pipes.core._pipeline_utils import (
     reset_fit_signature,
     getcallargs_inverse,
     validate_fit_transform,
+    ARGS_PARAM_NAME,
+    KWARGS_PARAM_NAME,
 )
 from dask_pipes.core.graph import Graph, VertexBase, EdgeBase
 from dask_pipes.exceptions import DaskPipesException
 from dask_pipes.utils import (
     get_arguments_description,
     get_return_description,
-    ReturnDescription,
+    ReturnParameter,
+    InputParameter,
     assert_subclass,
 )
-from dask_pipes.utils import replace_signature, to_snake_case, INSPECT_EMPTY_PARAMETER
+from dask_pipes.utils import (
+    replace_signature,
+    to_snake_case,
+    INSPECT_EMPTY_PARAMETER,
+    docstring_to_str,
+    set_function_return,
+)
 
 if TYPE_CHECKING:
     pass
@@ -85,13 +95,16 @@ class NodeSlot:
 
         Parameters
         ----------
-        node : NodeBase
+        node : NodeBase, PipelineBase
             Node to pipe into (or from)
         slot : str
             Slot to pipe into (or from)
         """
         if not hasattr(node, 'set_downstream') or not hasattr(node, 'set_upstream'):
             raise DaskPipesException("node {} must implement set_downstream, set_upstream".format(node))
+
+        if not isinstance(slot, str) or len(slot) == 0:
+            raise ValueError("Only non-empty string slots are allowed")
 
         self.node = node
         self.slot = slot
@@ -111,15 +124,14 @@ class NodeSlot:
         """
         if isinstance(other, NodeSlot):
             # Seems like we're piping output of current node slot to another node slot
-            if issubclass(other.node.__class__, NodeBase):
+            if isinstance(other.node, NodeBase):
                 self.node.set_downstream(other.node, upstream_slot=self.slot, downstream_slot=other.slot)
-            elif issubclass(other.node.__class__, PipelineBase):
+            elif isinstance(other.node, PipelineBase):
                 other.node.set_output(other.slot, self.node, upstream_slot=self.slot)
                 return None
             else:
                 raise NotImplementedError("Unknown node class {}".format(other.node.__class__.__name__))
 
-            self.node.set_downstream(other.node, upstream_slot=self.slot, downstream_slot=other.slot)
             return other.node
         elif isinstance(other, NodeBase):
             # Seems like we're piping output of current node slot to another node
@@ -147,10 +159,20 @@ class NodeSlot:
         -------
         other
 
+        Raises
+        --------
+        ValueError
+            if other.node is PipelineBase
         """
         if isinstance(other, NodeSlot):
             # Seems like we're piping output of some node slot to current node slot
-            self.node.set_upstream(other.node, upstream_slot=other.slot, downstream_slot=self.slot)
+            if isinstance(other.node, NodeBase):
+                self.node.set_upstream(other.node, upstream_slot=other.slot, downstream_slot=self.slot)
+            elif isinstance(other.node, PipelineBase):
+                raise ValueError("Piping from Pipeline to NodeSlot not supported")
+            else:
+                raise NotImplementedError("Unknown node class {}".format(other.node.__class__.__name__))
+
             return other.node
         elif isinstance(other, NodeBase):
             # Seems like we're piping output of some node to current node slot
@@ -367,9 +389,9 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         """
         if isinstance(other, NodeSlot):
             # Seems like we're piping output of current node to another node slot
-            if issubclass(other.node.__class__, NodeBase):
+            if isinstance(other.node, NodeBase):
                 self.set_downstream(other.node, downstream_slot=other.slot)
-            elif issubclass(other.node.__class__, PipelineBase):
+            elif isinstance(other.node, PipelineBase):
                 other.node.set_output(other.slot, self)
                 return None
             else:
@@ -420,7 +442,7 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
             raise NotImplementedError()
 
     @property
-    def outputs(self) -> List[ReturnDescription]:
+    def outputs(self) -> List[ReturnParameter]:
         """
         Outputs of an node (parses annotation of .transform function)
         Since this is defined in meta, we can get node outputs just based on it's class
@@ -434,7 +456,7 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         return get_return_description(getattr(self, 'transform'))
 
     @property
-    def inputs(self) -> List[inspect.Parameter]:
+    def inputs(self) -> List[InputParameter]:
         """
         Inputs of an node - parameters of self.fit function
         must be equal to parameters of self.transform
@@ -672,7 +694,7 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
     # =======================================================
     # Methods for replaceing fit's and transforms signatures
     # =======================================================
-    def _set_fit_signature(self, sign: inspect.Signature, doc=None):
+    def _set_fit_signature(self, sign: inspect.Signature, doc: Union[str, bytes]):
         """
         Set fit signature of wrapped estimator
 
@@ -686,7 +708,7 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         """
         self.fit = MethodType(replace_signature(self.__class__.fit, sign, doc=doc), self)
 
-    def _set_transform_signature(self, sign: inspect.Signature, doc=None):
+    def _set_transform_signature(self, sign: inspect.Signature, doc: Union[str, bytes]):
         """
         Set transform signature of  wrapped estimator
 
@@ -741,19 +763,27 @@ class FunctionNode(NodeBase):
     @func.setter
     def func(self, func):
         if func is not None:
-            self_parameter = list(inspect.signature(FunctionNode.fit).parameters.values())[0]
-            sign = inspect.signature(func)
+            if self.graph is not None:
+                if self.graph:
+                    raise ValueError("Cannot assign function when node already belongs to graph")
+
+            self_parameter = list(inspect.signature(FunctionNode.transform).parameters.values())[0]
+
+            input_params = get_arguments_description(func)
+            input_params_inspect = [inspect.Parameter(i.name, i.kind, default=i.default, annotation=i.type)
+                                    for i in input_params]
+            output_params = get_return_description(func)
+
             fit_sign = inspect.Signature(
-                parameters=[self_parameter] + list(sign.parameters.values()),
+                parameters=[self_parameter] + input_params_inspect,
                 return_annotation=FunctionNode
             )
             transform_sign = inspect.Signature(
-                parameters=[self_parameter] + list(sign.parameters.values()),
-                return_annotation=sign.return_annotation
+                parameters=[self_parameter] + input_params_inspect,
             )
-            self._set_fit_signature(fit_sign)
+            self._set_fit_signature(fit_sign, doc=self.fit.__doc__)
             self._set_transform_signature(transform_sign, doc=func.__doc__)
-            self.__doc__ = func.__doc__
+            set_function_return(self.transform, output_params)
         else:
             self._reset_fit_signature()
             self._reset_transform_signature()
@@ -767,13 +797,16 @@ class FunctionNode(NodeBase):
         Parameters
         ----------
         args
+            ignored
         kwargs
+            ignored
 
         Returns
         -------
-
+        self : FunctionNode
+            this node
         """
-        pass
+        return self
 
     def transform(self, *args, **kwargs):
         return self.func(*args, **kwargs)
@@ -811,14 +844,20 @@ class EstimatorNode(NodeBase):
             except DaskPipesException as ex:
                 raise DaskPipesException("Cannot wrap {}, reason: {}".format(estimator, str(ex)))
 
+            output_parameters = get_return_description(estimator.transform)
+
             fit_sign = inspect.signature(estimator.fit.__func__)
             fit_sign = inspect.Signature(
                 parameters=list(fit_sign.parameters.values()),
                 return_annotation=EstimatorNode
             )
-            self._set_fit_signature(fit_sign, doc=estimator.fit.__doc__)
+            self._set_fit_signature(fit_sign,
+                                    doc=estimator.fit.__doc__)
             self._set_transform_signature(inspect.signature(estimator.transform.__func__),
                                           doc=estimator.transform.__doc__)
+
+            set_function_return(self.transform, output_parameters)
+
             self.__doc__ = estimator.__doc__
         else:
             # noinspection PyTypeChecker
@@ -889,27 +928,75 @@ class PipelineNode(NodeBase):
                 self_parameter = [next(iter(inspect.signature(pipeline.fit.__func__).parameters.values()))]
             except StopIteration:
                 self_parameter = list()
-            seen_parameter_names = set()
-            unique_additional_parameters = list()
-            for param in pipeline.inputs:
-                if param.name in seen_parameter_names:
-                    continue
-                seen_parameter_names.add(param.name)
-                unique_additional_parameters.append(param)
+
+            pipeline_input_parameters = {i.name for i in pipeline.inputs}
+
+            unique_additional_parameters: List[InputParameter] = [
+                i for i in get_arguments_description(pipeline.transform)
+                if i.name in pipeline_input_parameters]
+            unique_additional_parameters_inspect = [
+                inspect.Parameter(i.name, i.kind, default=i.default, annotation=i.type)
+                for i in unique_additional_parameters
+            ]
 
             fit_sign = inspect.Signature(
-                parameters=self_parameter + unique_additional_parameters,
+                parameters=self_parameter + unique_additional_parameters_inspect,
                 return_annotation=pipeline.__class__
             )
-            self._set_fit_signature(fit_sign, doc=pipeline.fit.__doc__)
+
+            fit_doc = pipeline.fit.__doc__
+            if fit_doc is None:
+                fit_doc = ""
+
+            fit_doc = numpydoc.docscrape.NumpyDocString(fit_doc)
+
+            fit_doc['Parameters'] = [
+                numpydoc.docscrape.Parameter(i.name, i.type, i.desc)
+                for i in unique_additional_parameters
+            ]
+
+            fit_doc['Returns'] = [numpydoc.docscrape.Parameter("self", str(self.__class__.__name__), ["This node"])]
+
+            fit_doc = docstring_to_str(fit_doc)
+
+            self._set_fit_signature(fit_sign, doc=fit_doc)
+
+            # Set transform output parameters
+            set_function_return(self.fit, [('self', self.__class__.__name__, 'This node')])
+
+            # Transform
+            # -------------------------
 
             transform_sign = inspect.Signature(
-                parameters=self_parameter + unique_additional_parameters,
-                return_annotation={i.name: i.annotation for i in pipeline.outputs}
+                parameters=self_parameter + unique_additional_parameters_inspect,
+                return_annotation=Tuple
             )
 
+            transform_doc = pipeline.transform.__doc__
+            if transform_doc is None:
+                transform_doc = ""
+
+            transform_doc = numpydoc.docscrape.NumpyDocString(transform_doc)
+
+            transform_doc['Parameters'] = [
+                numpydoc.docscrape.Parameter(i.name, i.type, i.desc)
+                for i in unique_additional_parameters
+            ]
+
+            transform_doc['Returns'] = [
+                numpydoc.docscrape.Parameter(i.name, i.type, i.desc)
+                for i in pipeline.outputs
+            ]
+
+            transform_doc = docstring_to_str(transform_doc)
+
             self._set_transform_signature(transform_sign,
-                                          doc=pipeline.transform.__doc__)
+                                          doc=transform_doc)
+
+            # Set transform output parameters
+            pipeline_return = [(i.name, i.type, i.desc) for i in pipeline.outputs]
+            set_function_return(self.transform, pipeline_return)
+
         else:
             # noinspection PyTypeChecker
             self.__doc__ = self.__class__.__doc__
@@ -1009,7 +1096,7 @@ def as_node(obj: Any, name=None) -> Union[Union[FunctionNode, EstimatorNode], Pi
     """
     if callable(obj):
         return FunctionNode(name=name, func=obj)
-    elif issubclass(obj.__class__, PipelineBase):
+    elif isinstance(obj, PipelineBase):
         return PipelineNode(name=name, pipeline=obj)
     else:
         return EstimatorNode(name=name, estimator=obj)
@@ -1035,7 +1122,7 @@ def as_transform(obj: Any, name=None) -> TransformNode:
 
     """
 
-    if not issubclass(obj.__class__, NodeBase):
+    if not isinstance(obj, NodeBase):
         raise DaskPipesException("Can only use Nodes as transform-only")
     return TransformNode(name=name, node=obj)
 
@@ -1184,7 +1271,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
             # Seems like we're trying to pipe input of current pipeline to some node slot
             self.set_input(other.node, name=other.slot, downstream_slot=other.slot)
             return other.node
-        elif issubclass(other.__class__, NodeBase):
+        elif isinstance(other, NodeBase):
             # Seems like we're trying to pipe input of current pipeline to some node
             self.set_input(other)
             return other
@@ -1228,6 +1315,11 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
             pipeline slot
 
         """
+        original_signature = list(inspect.signature(self.__class__.transform).parameters.values())
+        reserved_names = {param.name: param for param in original_signature}
+        if slot_name in reserved_names and slot_name != ARGS_PARAM_NAME and slot_name != KWARGS_PARAM_NAME:
+            raise DaskPipesException("Slot name {} is reserved by pipeline's transform signature".format(slot_name))
+
         return NodeSlot(self, slot_name)
 
     def add_vertex(self, node: NodeBase, vertex_id=None):
@@ -1415,7 +1507,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         len_before = len(self.inputs)
         if len_before == 0:
             raise DaskPipesException("{} Does not have any arguments".format(self))
-        self.inputs = [i for i in self.inputs if i.name == name]
+        self.inputs = [i for i in self.inputs if i.name != name]
         if len(self.inputs) == len_before:
             raise DaskPipesException("{} Does not have argument {}".format(self, name))
         self._update_fit_transform_signatures()
@@ -1441,9 +1533,9 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         # TODO: implement output deletion
         raise NotImplementedError()
 
-    def set_output(self, name: str, upstream_node: NodeBase, upstream_slot: Optional[str] = None,
+    def set_output(self, name: str, node: NodeBase, upstream_slot: Optional[str] = None,
                    replace: bool = False):
-        if not issubclass(upstream_node.__class__, NodeBase):
+        if not isinstance(node, NodeBase):
             raise ValueError("upstream_node must subclass {}".format(NodeBase.__name__))
 
             # Check if specific output exists
@@ -1456,7 +1548,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
         # Check existance of upstream node output
 
-        upstream_outputs = [i.name for i in upstream_node.outputs]
+        upstream_outputs = [i.name for i in node.outputs]
         if len(upstream_outputs) == 0:
             raise ValueError("Upstream node does not have any outputs")
 
@@ -1465,23 +1557,25 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
                 upstream_slot = upstream_outputs[0]
             else:
                 raise ValueError("Upstream node {} has multiple outputs. Upstream node name must be one of {}. "
-                                 "Example: upstream['node_name'] >> pipeline['output'] ".format(upstream_node,
+                                 "Example: upstream['node_name'] >> pipeline['output'] ".format(node,
                                                                                                 upstream_outputs))
 
         if upstream_slot not in upstream_outputs:
             raise ValueError(
-                "Upstream node '{}' does not have output named '{}'. Available outputs: {}".format(upstream_node,
+                "Upstream node '{}' does not have output named '{}'. Available outputs: {}".format(node,
                                                                                                    upstream_slot,
                                                                                                    upstream_outputs))
 
-        upstream_output = [i for i in upstream_node.outputs if i.name == upstream_slot]
+        upstream_output = [i for i in node.outputs if i.name == upstream_slot]
         assert len(upstream_output) > 0
         if len(upstream_output) > 1:
-            raise ValueError("Upstream node {} has multiple outputs named {}".format(upstream_node, upstream_slot))
+            raise ValueError("Upstream node {} has multiple outputs named {}".format(node, upstream_slot))
         upstream_output = upstream_output[0]
 
+        p_desc = "Output of {}".format(node.name)
+
         self.outputs.append(
-            PipelineOutput(name, upstream_node, upstream_slot, upstream_output.type)
+            PipelineOutput(name, node, upstream_slot, upstream_output.type, p_desc)
         )
 
     def set_input(self, node: NodeBase, name=None, downstream_slot=None, suffix: Optional[str] = None):  # noqa: C901
@@ -1563,12 +1657,35 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
         param = node_inputs[downstream_slot]
 
+        p_type = param.type
+
+        # Infer type from downstream doc
+        downstream_node_arguments = get_arguments_description(node.transform)
+        downstream_node_arguments_type = None
+        for arg in downstream_node_arguments:
+            if arg.name == downstream_slot:
+                downstream_node_arguments_type = arg.type
+        if downstream_node_arguments_type:
+            p_type = downstream_node_arguments_type
+
+        p_desc = "Downstream node - {}".format(node.name)
+
+        if param.kind == inspect.Parameter.VAR_POSITIONAL:
+            if name != ARGS_PARAM_NAME:
+                raise ValueError(
+                    "Variadic positional inputs must have name '{}', got '{}'".format(ARGS_PARAM_NAME, name))
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            if name != KWARGS_PARAM_NAME:
+                raise ValueError(
+                    "Variadic keyword inputs must have name '{}', got '{}'".format(KWARGS_PARAM_NAME, name))
+
         self.inputs.append(PipelineInput(name=name,
                                          downstream_slot=downstream_slot,
                                          downstream_node=node,
                                          default=param.default,
                                          kind=param.kind,
-                                         annotation=param.annotation))
+                                         type=p_type,
+                                         desc=p_desc))
         self._update_fit_transform_signatures()
 
     def _update_fit_transform_signatures(self):
@@ -1581,17 +1698,25 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
         """
         if len(self.inputs) > 0:
-            new_params, param_downstream_mapping = get_input_signature(self)
+            new_params, param_downstream_mapping, fit_docstring, transform_docstring = get_input_signature(self)
             self._param_downstream_mapping = param_downstream_mapping
             return_annotation = self.__class__.fit.__annotations__.get('return', INSPECT_EMPTY_PARAMETER)
 
-            set_fit_signature(self, inspect.Signature(
-                parameters=new_params,
-                return_annotation=return_annotation))
+            fit_doc = docstring_to_str(fit_docstring)
 
-            set_transform_signature(self, inspect.Signature(
-                parameters=new_params,
-                return_annotation=return_annotation))
+            set_fit_signature(self,
+                              inspect.Signature(
+                                  parameters=new_params,
+                                  return_annotation=return_annotation),
+                              doc=fit_doc)
+
+            transform_doc = docstring_to_str(transform_docstring)
+
+            set_transform_signature(self,
+                                    inspect.Signature(
+                                        parameters=new_params,
+                                        return_annotation=return_annotation),
+                                    doc=transform_doc)
         else:
             self._param_downstream_mapping = None
             reset_fit_signature(self)

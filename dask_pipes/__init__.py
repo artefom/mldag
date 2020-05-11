@@ -6,3 +6,4 @@ from . import pipes  # noqa F401
 from . import style  # noqa F401
 from .core.pipeline import as_node, as_transform  # noqa F401
 from .pipeline import *  # noqa F401
+from .utils import returns  # noqa F401

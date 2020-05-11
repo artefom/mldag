@@ -18,9 +18,10 @@ import pandas as pd
 import sqlalchemy as db
 import sqlalchemy.sql.functions as func
 import yaml
+from yaml.constructor import ConstructorError
+
 from dask_pipes.core import PipelineMixin, NodeCallable, NodeBase
 from dask_pipes.exceptions import DaskPipesException
-from yaml.constructor import ConstructorError
 
 logger = logging.getLogger(__name__)
 

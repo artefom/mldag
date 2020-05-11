@@ -6,7 +6,7 @@ from uuid import uuid4
 from dask_pipes.core import PipelineBase, NodeBase, NodeConnection, getcallargs_inverse
 from dask_pipes.display import display
 from dask_pipes.exceptions import DaskPipesException
-from dask_pipes.utils import ReturnDescription
+from dask_pipes.utils import ReturnParameter
 
 __all__ = ['Pipeline']
 
@@ -33,7 +33,7 @@ def _parse_node_output(node, output):
         If function result length does not match expected number outputs defined in node.outputs
         If function result dictionary keys does not match keys defined in node node.outputs
     """
-    expected_result: List[ReturnDescription] = node.outputs
+    expected_result: List[ReturnParameter] = node.outputs
     expected_keys = [i.name for i in expected_result]
     if not isinstance(output, list) and not isinstance(output, tuple) and not isinstance(output, dict):
         output = (output,)
@@ -572,7 +572,7 @@ class Pipeline(PipelineBase):
 
         Returns
         -------
-        run: PipelineRun
+        run : PipelineRun
             computed pipeline run containing all node outputs
 
         """
@@ -603,6 +603,7 @@ class Pipeline(PipelineBase):
              port_labels_minimal=True,
              show_pipeline_io=True,
              show_class=True,
+             class_max_len=0,
              cluster_pipeline_ports=True,
              max_pipeline_depth=-1):
         return display(self,
@@ -612,5 +613,6 @@ class Pipeline(PipelineBase):
                        port_labels_minimal=port_labels_minimal,
                        show_pipeline_io=show_pipeline_io,
                        show_class=show_class,
+                       class_max_len=class_max_len,
                        cluster_pipeline_ports=cluster_pipeline_ports,
                        max_pipeline_depth=max_pipeline_depth)

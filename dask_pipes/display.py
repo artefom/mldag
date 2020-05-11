@@ -61,6 +61,25 @@ class GraphvizRenderer(PipelineRenderer):
             return '<TR> {} </TR>'.format(''.join(defs)), len(defs)
         return '', 0
 
+    def _shorten_word(self, x, max_len):
+        if not max_len:
+            return x
+        x = x.split(' ')
+        n_words = 2
+        while len(' '.join(x[:n_words]) + ('\u2026' if n_words <= len(x) else '')) <= max_len and n_words <= len(x):
+            n_words += 1
+
+        initial_len = len(x)
+        x = ' '.join(x[:(n_words - 1)])
+        if len(x) > max_len:
+            if max_len > 2:
+                x = x[:(max_len - 2)] + '\u2026'
+            else:
+                x = x[:max_len]
+        elif n_words <= initial_len:
+            x = x + "\u2026"
+        return x
+
     def render_node(self, node, g, path, parameters):
         if parameters['show_ports']:
             input_defs, input_defs_len = self._render_node_ports_htlm(node, input_flag=True)
@@ -79,9 +98,11 @@ class GraphvizRenderer(PipelineRenderer):
                 break
 
         if parameters['show_class']:
+            annotation = node.__class__.__name__
+            annotation = self._shorten_word(annotation, parameters['class_max_len'])
             class_def = f'''
             <TR>
-                <TD COLSPAN="{max_span}">&#xab;{node.__class__.__name__}&#xbb;</TD>
+                <TD COLSPAN="{max_span}">&#xab;{annotation}&#xbb;</TD>
             </TR>
             '''
         else:
@@ -112,6 +133,7 @@ class GraphvizRenderer(PipelineRenderer):
         if parameters['show_class'] and port_annotation != INSPECT_EMPTY_PARAMETER:
             annotation = port_annotation.__name__ \
                 if isinstance(port_annotation, type) else str(port_annotation)
+            annotation = self._shorten_word(annotation, parameters['class_max_len'])
             class_tag = "&#xab;" + annotation + "&#xbb;" + "\n"
         else:
             class_tag = ''
@@ -131,9 +153,9 @@ class GraphvizRenderer(PipelineRenderer):
             if node_id not in seen_node_ids:
                 if parameters['cluster_pipeline_ports']:
                     with input_cluster if input_flag else output_cluster as cluster:
-                        self._render_pipeline_port_node(cluster, port.annotation, node_id,
+                        self._render_pipeline_port_node(cluster, port.type, node_id,
                                                         port_name, input_flag, parameters)
-                    self._render_pipeline_port_node(g, port.annotation, node_id,
+                    self._render_pipeline_port_node(g, port.type, node_id,
                                                     port_name, input_flag, parameters)
             connected_nodes = self.get_node_id_and_port(
                 port.downstream_node if input_flag else port.upstream_node,
@@ -312,6 +334,7 @@ class GraphvizRenderer(PipelineRenderer):
                 port_labels_minimal=True,
                 show_pipeline_io=False,
                 show_class=True,
+                class_max_len=0,
                 cluster_pipeline_ports=True,
                 max_pipeline_depth=-1,
                 ):
@@ -322,6 +345,7 @@ class GraphvizRenderer(PipelineRenderer):
             'port_labels_minimal': port_labels_minimal,
             'show_pipeline_io': show_pipeline_io,
             'show_class': show_class,
+            'class_max_len': class_max_len,
             'cluster_pipeline_ports': cluster_pipeline_ports,
             'max_pipeline_depth': max_pipeline_depth,
         }
@@ -344,6 +368,7 @@ def display(obj,
             port_labels_minimal=True,
             show_pipeline_io=True,
             show_class=True,
+            class_max_len=0,
             cluster_pipeline_ports=True,
             max_pipeline_depth=-1,
             ):
@@ -354,5 +379,6 @@ def display(obj,
                                                    show_port_labels=show_port_labels,
                                                    show_ports=show_ports,
                                                    show_class=show_class,
+                                                   class_max_len=class_max_len,
                                                    cluster_pipeline_ports=cluster_pipeline_ports,
                                                    )

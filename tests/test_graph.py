@@ -1,10 +1,11 @@
 import os
 
 import dask.dataframe as dd
-import dask_pipes as dp
 import numpy as np
 import pandas as pd
 import pytest
+
+import dask_pipes as dp
 from dask_pipes.exceptions import DaskPipesException
 
 ds1 = pd.DataFrame([['cat5', -0.08791349765766582, 1],
