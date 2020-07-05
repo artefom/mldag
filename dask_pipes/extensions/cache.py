@@ -10,10 +10,11 @@ import urllib.parse
 import weakref
 from collections import namedtuple
 from functools import partial
-from typing import Any, Dict, Tuple, Union, Optional
+from typing import Any, Dict, Tuple, Optional
 from uuid import uuid4
 
 import dask.dataframe as dd
+import numpy
 import pandas as pd
 import sqlalchemy as db
 import sqlalchemy.sql.functions as func
@@ -523,6 +524,22 @@ class DataFrameLoader(yaml.SafeLoader):
                  df_load_cache=None,
                  recover_categories=True,
                  **kwargs):
+        """
+
+        Parameters
+        ----------
+        args
+        df_dump_cache : dict
+            Cache of dumped dataframes
+            When dataframe is loaded from disk the dataframe object associates with the file it was read from
+            by storing its id in this dictionary
+            Later, if dictionary representation of object is needed path of the file it was loaded from is returned
+        df_load_cache
+        recover_categories : bool
+            Parquet files do not support information about column categories
+            We could just store category info somewhere else and recover it later
+        kwargs
+        """
         self.recover_categories = recover_categories
         if df_load_cache is None:
             self.df_load_cache = dict()
@@ -555,11 +572,11 @@ class DataFrameLoader(yaml.SafeLoader):
 
     def _construct_df(self, node, as_dask=False):
         state = self.construct_mapping(node)
-        path = self._validate_cache(state, node)
-
         if tuple(state.items()) in self.df_load_cache:
             rv = self.df_load_cache[tuple(sorted(state.items()))]
             return rv
+
+        path = self._validate_cache(state, node)
 
         ext = os.path.splitext(path)[1].lower()
 
@@ -586,8 +603,26 @@ class DataFrameLoader(yaml.SafeLoader):
                 except AttributeError:
                     pass
 
+        # TODO: Replace load cache with weak reference
         self.df_load_cache[tuple(sorted(state.items()))] = rv
         self.df_dump_cache[id(rv)] = (state, weakref.ref(rv))
+        return rv
+
+    def _construct_numpy_array(self, node):
+        state = self.construct_mapping(node)
+        if tuple(state.items()) in self.df_load_cache:
+            rv = self.df_load_cache[tuple(sorted(state.items()))]
+            return rv
+
+        path = self._validate_cache(state, node)
+        with open(path, 'rb') as f:
+            rv = numpy.load(f)
+
+        # Record value for future use
+        # TODO: Replace load cache with weak reference
+        self.df_load_cache[tuple(sorted(state.items()))] = rv
+        self.df_dump_cache[id(rv)] = (state, weakref.ref(rv))
+
         return rv
 
     def construct_dask_dataframe(self, node):
@@ -596,11 +631,38 @@ class DataFrameLoader(yaml.SafeLoader):
     def construct_pandas_dataframe(self, node):
         return self._construct_df(node, as_dask=False)
 
+    def construct_numpy_array(self, node):
+        return self._construct_numpy_array(node)
+
+    def construct_numpy_float(self, node):
+        return numpy.float(self.construct_yaml_float(node))
+
+    def construct_numpy_float128(self, node):
+        value = self.construct_scalar(node)
+        value = value.replace('_', '').lower()
+        sign = +1
+        if value[0] == '-':
+            sign = -1
+        if value[0] in '+-':
+            value = value[1:]
+        if value == '.inf':
+            return sign * self.inf_value
+        elif value == '.nan':
+            return self.nan_value
+        else:
+            return sign * numpy.float128(value)
+
 
 DataFrameLoader.add_constructor('tag:yaml.org,2002:dask.DataFrame',
                                 DataFrameLoader.construct_dask_dataframe)
 DataFrameLoader.add_constructor('tag:yaml.org,2002:pandas.DataFrame',
                                 DataFrameLoader.construct_pandas_dataframe)
+DataFrameLoader.add_constructor('tag:yaml.org,2002:numpy.ndarray',
+                                DataFrameLoader.construct_numpy_array)
+DataFrameLoader.add_constructor('tag:yaml.org,2002:numpy.floating',
+                                DataFrameLoader.construct_numpy_float)
+DataFrameLoader.add_constructor('tag:yaml.org,2002:numpy.float128',
+                                DataFrameLoader.construct_numpy_float128)
 
 
 class DataFrameDumper(yaml.SafeDumper):
@@ -615,18 +677,32 @@ class DataFrameDumper(yaml.SafeDumper):
                  run_name=None,
                  tag=None,
                  df_dump_cache=None,
-                 df_load_cache=None,
                  **kwargs):
+        """
+
+        Parameters
+        ----------
+        args
+        directory
+        node_name : str, optional
+            Name of node used in naming stored data
+            (multiple dumped datasets from one node will contain same part)
+        run_name : str, optional
+            Name of run used in naming stored data
+            (all datasets dumped within one run will have same this prefix)
+        tag : str, optional
+            Some tag to append to file names so they can be visually identified on the disk
+        df_dump_cache : dict
+            Cache of dumped objects
+            If object was already dumped, cached value is re-used
+            Can be shared between multiple instances of DataFrameDumpers or loaders
+        kwargs
+        """
         if directory is None:
             raise ValueError("Directory of %s cannot be null. "
                              "Use dataframe_dumper_factory to provide additional arguments to dumper"
                              % self.__class__.__name__)
         self.directory = directory
-
-        if df_load_cache is None:
-            self.df_load_cache = dict()
-        else:
-            self.df_load_cache = df_load_cache
 
         if df_dump_cache is None:
             self.df_dump_cache = dict()
@@ -661,7 +737,22 @@ class DataFrameDumper(yaml.SafeDumper):
         return rv
 
     @staticmethod
-    def _create_dump_data(path):
+    def _represent_path(path):
+        """
+        Get representation of dataframe on disc as dictionary
+        Returns its location and modification time
+
+        Parameters
+        ----------
+        path : str
+            Path to dataframe to represent
+
+        Returns
+        -------
+        file_info : dict
+            Dictionary containing location of represented dataframe and its modification time
+            {'uri': ..., 'mtime': ...}
+        """
         return {
             'uri': path_to_uri(path),
             'mtime': os.path.getmtime(path),
@@ -669,33 +760,196 @@ class DataFrameDumper(yaml.SafeDumper):
 
     # TODO: Write doc, mention caching mechanism and why should we associate files
     @staticmethod
-    def associate(df_dump_cache, path, df: Union[pd.DataFrame, dd.DataFrame]):
-        dump_data = DataFrameDumper._create_dump_data(path)
-        df_dump_cache[id(df)] = (dump_data, weakref.ref(df))
-        return dump_data
+    def associate(df_dump_cache, path, obj):
+        """
+        Associates object with file so when dictionary representation of object is needed
+        we don't need to return whole binary data but 'path' containing all necessary data instead
 
-    def _represent_dataframe(self, df: Union[dd.DataFrame, pd.DataFrame], ext='.parquet'):
-        dump_data, ref = self.df_dump_cache.get(id(df), (None, None))
-        if ref is None or ref() is None:
-            path_full = self.get_path(self.directory, ext)
-            if ext == '.parquet':
-                df.to_parquet(path_full, engine='fastparquet', compression='gzip')
-            elif ext == '.h5' or ext == '.hdf':
-                df.to_hdf(path_full, 'df', mode='w', format='table', append=False)
-            return self.associate(self.df_dump_cache, path_full, df)
-        return dump_data
+        Parameters
+        ----------
+        df_dump_cache : dict
+            Dictionary of weak references
+        path : str
+            Path to file
+        obj : object
+            Any object to associate with given file
 
-    def represent_dd_dataframe(self, df: dd.DataFrame):
-        dump_data = self._represent_dataframe(df, ext='.parquet')
-        return self.represent_mapping('tag:yaml.org,2002:dask.DataFrame', dump_data)
+        Returns
+        -------
+        file_info : dict
+            Dictionary containing location of represented dataframe and its modification time
+            {'uri': ..., 'mtime': ...}
+        """
+        representation_dict = DataFrameDumper._represent_path(path)
+        df_dump_cache[id(obj)] = (representation_dict, weakref.ref(obj))
+        return representation_dict
 
-    def represent_pd_dataframe(self, df: pd.DataFrame):
-        dump_data = self._represent_dataframe(df, ext='.hdf')
-        return self.represent_mapping('tag:yaml.org,2002:pandas.DataFrame', dump_data)
+    def _dataframe_as_dict(self, df, ext='.parquet'):
+        """
+        Get dictionary representation of dataframe
+        Writes dataframe to disk if necessary
+
+        If dataframe was already dumped to disc (or associated with file)
+        write is skipped
+
+        Parameters
+        ----------
+        df : dask.dataframe.DataFrame or pandas.DataFrame
+            Dataframe to get representation for
+        ext : str
+            File extension for writing dataframe
+            (.h5, .hdf, .parquet are supported)
+        Returns
+        -------
+        file_info : dict
+            Dictionary containing location of represented dataframe and its modification time
+            {'uri': ..., 'mtime': ...}
+
+        """
+        # If dataframe was already represented (dumped to disk), do not do it again and just reuse
+        if id(df) in self.df_dump_cache:
+            return self.df_dump_cache[id(df)][0]
+
+        path_full = self.get_path(self.directory, ext)
+        if ext == '.parquet':
+            df.to_parquet(path_full, engine='fastparquet', compression='gzip')
+        elif ext == '.h5' or ext == '.hdf':
+            df.to_hdf(path_full, 'df', mode='w', format='table', append=False)
+        return self.associate(self.df_dump_cache, path_full, df)
+
+    def _ndarray_as_dict(self, array):
+        """
+        Get dictionary representation of numpy array
+        Parameters
+        ----------
+        array : numpy.ndarray
+            Array to represent
+
+        Returns
+        -------
+        file_info : dict
+            Dictionary containing information about file with data of array on disc
+            {'uri': ..., 'mtime': ...}
+        """
+        if id(array) in self.df_dump_cache:
+            return self.df_dump_cache[id(array)]
+
+        path_full = self.get_path(self.directory, '.npy')
+        with open(path_full, 'wb') as f:
+            numpy.save(f, array)
+        return self.associate(self.df_dump_cache, path_full, array)
+
+    def represent_dd_dataframe(self, data: dd.DataFrame):
+        """
+        Method used by yaml to dump objects of specific type
+        Is registered later by .add_representer
+        Parameters
+        ----------
+        data : dask.dataframe.DataFrame
+            Dataframe to represent
+
+        Returns
+        -------
+        node : MappingNode
+            internal yaml object
+        """
+        # TODO: Add threshold on number of rows for dataframe to be dumped to disk
+        representation_dict = self._dataframe_as_dict(data, ext='.parquet')
+        # tag:yaml.org,2002: seems to be generic prefix
+        return self.represent_mapping('tag:yaml.org,2002:dask.DataFrame', representation_dict)
+
+    def represent_pd_dataframe(self, data: pd.DataFrame):
+        """
+        Method used by yaml to dump objects of specific type
+        Is registered later by .add_representer
+        Parameters
+        ----------
+        data : pandas.DataFrame
+            Dataframe to represent
+
+        Returns
+        -------
+        node : MappingNode
+            internal yaml object
+        """
+        # TODO: Add threshold on number of rows for dataframe to be dumped to disk
+        representation_dict = self._dataframe_as_dict(data, ext='.hdf')
+        # tag:yaml.org,2002: seems to be generic prefix
+        return self.represent_mapping('tag:yaml.org,2002:pandas.DataFrame', representation_dict)
+
+    def represent_numpy_array(self, data: numpy.ndarray):
+        """
+        Method used by yaml to dump objects of specific type
+        Is registered later by .add_representer
+        Parameters
+        ----------
+        data : numpy.ndarray
+            N-dimensional array to represent
+
+        Returns
+        -------
+        node : MappingNode
+            internal yaml object
+        """
+        representation_dict = self._ndarray_as_dict(data)
+        return self.represent_mapping('tag:yaml.org,2002:numpy.ndarray', representation_dict)
+
+    def represent_numpy_float(self, data):
+        if data != data or (data == 0.0 and data == 1.0):
+            value = '.nan'
+        elif data == self.inf_value:
+            value = '.inf'
+        elif data == -self.inf_value:
+            value = '-.inf'
+        else:
+            value = repr(data).lower()
+            # Note that in some cases `repr(data)` represents a float number
+            # without the decimal parts.  For instance:
+            #   >>> repr(1e17)
+            #   '1e17'
+            # Unfortunately, this is not a valid float representation according
+            # to the definition of the `!!float` tag.  We fix this by adding
+            # '.0' before the 'e' symbol.
+            if '.' not in value and 'e' in value:
+                value = value.replace('e', '.0e', 1)
+        return self.represent_scalar('tag:yaml.org,2002:numpy.floating', value)
+
+    def represent_numpy_float128(self, data):
+        if data != data or (data == 0.0 and data == 1.0):
+            value = '.nan'
+        elif data == self.inf_value:
+            value = '.inf'
+        elif data == -self.inf_value:
+            value = '-.inf'
+        else:
+            value = repr(data).lower()
+            # Note that in some cases `repr(data)` represents a float number
+            # without the decimal parts.  For instance:
+            #   >>> repr(1e17)
+            #   '1e17'
+            # Unfortunately, this is not a valid float representation according
+            # to the definition of the `!!float` tag.  We fix this by adding
+            # '.0' before the 'e' symbol.
+            if '.' not in value and 'e' in value:
+                value = value.replace('e', '.0e', 1)
+        return self.represent_scalar('tag:yaml.org,2002:numpy.float128', value)
 
 
 DataFrameDumper.add_representer(dd.DataFrame, DataFrameDumper.represent_dd_dataframe)
 DataFrameDumper.add_representer(pd.DataFrame, DataFrameDumper.represent_pd_dataframe)
+DataFrameDumper.add_representer(numpy.ndarray, DataFrameDumper.represent_numpy_array)
+DataFrameDumper.add_representer(numpy.float16, DataFrameDumper.represent_numpy_float)
+DataFrameDumper.add_representer(numpy.float32, DataFrameDumper.represent_numpy_float)
+DataFrameDumper.add_representer(numpy.float64, DataFrameDumper.represent_numpy_float)
+DataFrameDumper.add_representer(numpy.float128, DataFrameDumper.represent_numpy_float128)
+DataFrameDumper.add_representer(numpy.int8, DataFrameDumper.represent_int)
+DataFrameDumper.add_representer(numpy.int16, DataFrameDumper.represent_int)
+DataFrameDumper.add_representer(numpy.int32, DataFrameDumper.represent_int)
+DataFrameDumper.add_representer(numpy.int64, DataFrameDumper.represent_int)
+DataFrameDumper.add_representer(numpy.uint8, DataFrameDumper.represent_int)
+DataFrameDumper.add_representer(numpy.uint16, DataFrameDumper.represent_int)
+DataFrameDumper.add_representer(numpy.uint32, DataFrameDumper.represent_int)
+DataFrameDumper.add_representer(numpy.uint64, DataFrameDumper.represent_int)
 
 
 def dataframe_loader_factory(df_dump_cache=None, df_load_cache=None, recover_categories=True):
@@ -713,8 +967,7 @@ def dataframe_dumper_factory(directory,
                              node_name=None,
                              run_name=None,
                              tag=None,
-                             df_dump_cache=None,
-                             df_load_cache=None):
+                             df_dump_cache=None):
     directory = os.path.abspath(directory)
 
     def get_dumper(*args, **kwargs):
@@ -726,7 +979,6 @@ def dataframe_dumper_factory(directory,
                                run_name=run_name,
                                tag=tag,
                                df_dump_cache=df_dump_cache,
-                               df_load_cache=df_load_cache,
                                **kwargs)
 
     return get_dumper
@@ -811,7 +1063,6 @@ class CacheMixin(PipelineMixin):
             run_name=run_name,
             tag=tag,
             df_dump_cache=self._df_dump_cache,
-            df_load_cache=self._df_load_cache,
         )
         rv = yaml.dump(data, Dumper=dumper)
         return rv
@@ -841,17 +1092,34 @@ class CacheMixin(PipelineMixin):
              func: NodeCallable,
              node: NodeBase,
              node_input: Tuple[Tuple[Any], Dict[str, Any]]):
+        """
+        Run fit for node or skip if cached transform data available
+
+        Parameters
+        ----------
+        run
+        func
+            Function to execute (node's fit with some wrappers)
+        node
+            Node of pipeline
+        node_input
+            Input
+        """
         node_name = node.name
         node_input_dump = self.dump(node_input, node_name=node_name, tag='input', run_name=run.run_id)
         code_hash = hash_class_code(node) if self.record_code_hash else 'unknown'
         fit_run_id = self.storage.get_fit_run_id(node_name, node_input_dump, code_hash)
 
         if fit_run_id is not None:
+            # Set fit run id, so transform can search cache by this id
             self._set_fit_run_id(node, fit_run_id)
             self.verbose and logger.warning("Skipping fit for {}".format(node_name))
             return
 
         func(run, node, node_input)
+        # Set 'true' fit run id - true fit run id is only set when node is actually fitted
+        # By comparing 'true' fit run id with current fit run id we can check if
+        # Node was actually fitted and non-cached transform can be applied
         self._set_fit_run_id(node, run.run_id, true_run_id=True)
         self.storage.record_fit(
             node_name=node_name,
@@ -873,6 +1141,8 @@ class CacheMixin(PipelineMixin):
             tag='input',
             run_name=run.run_id,
         )
+
+        # Get fit run id for searching transforms of that fit
         fit_run_id = self._get_fit_run_id(node)
 
         if fit_run_id is None:
@@ -887,18 +1157,15 @@ class CacheMixin(PipelineMixin):
         if node_output_dump is not None:
             self.verbose and logger.warning("Using transform cache for {}".format(node_name))
         else:
-            current_fit_run_id = self._get_fit_run_id(node, true_run_id=True)
+            true_fit_run_id = self._get_fit_run_id(node, true_run_id=True)
 
-            if current_fit_run_id is None or current_fit_run_id != fit_run_id:
-                # Re-run fit operation before transforming input
-                if current_fit_run_id is None:
-                    current_fit_run_id = fit_run_id
-
-                # TODO: replace that with loading with pickle
-                original_fit_args = self.storage.get_fit_run_input(node.name, current_fit_run_id)
-                node_args = self.load(original_fit_args)
-                node.fit(*node_args[0], **node_args[1])
-                self._set_fit_run_id(node, current_fit_run_id, true_run_id=True)
+            if true_fit_run_id is None or true_fit_run_id != fit_run_id:
+                # TODO: maybe we can load old node by its fit run id?
+                raise NotImplementedError("Node was not fitted for current parameters (fit skipped due to caching). "
+                                          "Cannot call .transform directly. "
+                                          "Transform cache does not exist. "
+                                          "True fit run id: {}, current: {} "
+                                          "Delete cache and try again.".format(true_fit_run_id, fit_run_id))
 
             node_output_dump = self.dump(
                 func(run, node, node_input),
@@ -910,7 +1177,7 @@ class CacheMixin(PipelineMixin):
             # Use 'true' run id here since we're not using cache.
             # Rather, calling true transform on current fit parameters
             self.storage.record_transform(
-                fit_run_id=current_fit_run_id,
+                fit_run_id=true_fit_run_id,
                 node_name=node_name,
                 node_input=node_input_dump,
                 node_output=node_output_dump,
