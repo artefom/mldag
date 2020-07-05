@@ -63,8 +63,6 @@ def validate_estimator(obj):
     obj : class instance
         class to validate
     """
-    if not hasattr(obj, 'fit'):
-        raise DaskPipesException("{} must implement fit".format(obj))
     if not hasattr(obj, 'transform'):
         raise DaskPipesException("{} must implement transform".format(obj))
 
@@ -468,7 +466,7 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         inputs : List[inspect.Parameter]
             list of node inputs
         """
-        return get_arguments_description(getattr(self, 'fit'))
+        return get_arguments_description(getattr(self, 'transform'))
 
     @staticmethod
     def validate(node):
@@ -846,13 +844,16 @@ class EstimatorNode(NodeBase):
 
             output_parameters = get_return_description(estimator.transform)
 
-            fit_sign = inspect.signature(estimator.fit.__func__)
-            fit_sign = inspect.Signature(
-                parameters=list(fit_sign.parameters.values()),
-                return_annotation=EstimatorNode
-            )
-            self._set_fit_signature(fit_sign,
-                                    doc=estimator.fit.__doc__)
+            if hasattr(estimator, 'fit'):
+                # Estimator is not obliged to have fit method, so this is entirely optional
+                fit_sign = inspect.signature(estimator.fit.__func__)
+                fit_sign = inspect.Signature(
+                    parameters=list(fit_sign.parameters.values()),
+                    return_annotation=EstimatorNode
+                )
+                self._set_fit_signature(fit_sign,
+                                        doc=estimator.fit.__doc__)
+
             self._set_transform_signature(inspect.signature(estimator.transform.__func__),
                                           doc=estimator.transform.__doc__)
 
@@ -885,7 +886,9 @@ class EstimatorNode(NodeBase):
         -------
 
         """
-        self.estimator.fit(*args, **kwargs)
+        if hasattr(self.estimator, 'fit'):
+            # Fit is entirely optional
+            self.estimator.fit(*args, **kwargs)
         return self
 
     def transform(self, *args, **kwargs):

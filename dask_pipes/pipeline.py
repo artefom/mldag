@@ -124,7 +124,7 @@ class PipelineRun:
                                                      repr(val))) from None
 
     @staticmethod
-    def _handle_var_key(downstream_args: dict, downstream_slot: str, val: Dict, node=None, upstream_slot=None):
+    def _handle_var_key(downstream_args: dict, downstream_slot: str, val: dict, node=None, upstream_slot=None):
         """
         Accumulates key-word parameters in downstream_args dictionary
         Checks for duplicate names, val type to be some kind of mapping
@@ -271,8 +271,6 @@ class PipelineRun:
                 "Invalid return. Expected {}, received {}".format(dict.__name__,
                                                                   node_result_dict.__class__.__name__))
 
-        node.get_downstream()
-
         # Propagate node result according to the downstream edges
         for edge in node.get_downstream():
             downstream_node: NodeBase = edge.downstream
@@ -282,7 +280,7 @@ class PipelineRun:
             # Populate arguments of downstream vertex
             downstream_param = next((i for i in downstream_node.inputs if i.name == edge.downstream_slot))
 
-            if downstream_node.name in self.node_inputs:
+            if downstream_node.name not in self.node_inputs:
                 self.node_inputs[downstream_node.name] = dict()
 
             self._process_node_result_value(
@@ -330,7 +328,7 @@ class PipelineRun:
             raise DaskPipesException("No input for node {}".format(node))
 
         # Convert node_callargs to match signature (properly handles *args and **kwargs)
-        node_input = getcallargs_inverse(node.fit, **node_callargs)
+        node_input = getcallargs_inverse(node.transform, **node_callargs)
 
         # Fit node
         if compute_fit:
