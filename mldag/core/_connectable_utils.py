@@ -5,10 +5,10 @@ from typing import List, Tuple, Dict, Any, Union, Iterable
 
 import numpydoc.docscrape
 
-from ..exceptions import DaskPipesException
+from ..exceptions import MldagException
 from ..utils import replace_signature, INSPECT_EMPTY_PARAMETER, InputParameter
 
-__all__ = ['PipelineInput', 'PipelineOutput', 'get_input_signature',
+__all__ = ['MLDagInput', 'MLDagOutput', 'get_input_signature',
            'set_fit_signature', 'set_transform_signature',
            'reset_fit_signature', 'reset_transform_signature',
            'getcallargs_inverse', 'validate_fit_transform',
@@ -36,12 +36,12 @@ def validate_fit_transform(name, attrs,  # noqa: C901
     if 'fit' in attrs:
         f_sign = inspect.signature(attrs['fit'])
     else:
-        raise DaskPipesException("Class {} does not have fit method".format(name))
+        raise MldagException("Class {} does not have fit method".format(name))
     if 'transform' in attrs:
         if f_sign.parameters != inspect.signature(attrs['transform']).parameters:
-            raise DaskPipesException("Class {} fit parameters does not match transform parameters".format(name))
+            raise MldagException("Class {} fit parameters does not match transform parameters".format(name))
     else:
-        raise DaskPipesException("Class {} does not have transform method".format(name))
+        raise MldagException("Class {} does not have transform method".format(name))
 
     if obligatory_variadic:
         var_pos = None
@@ -52,7 +52,7 @@ def validate_fit_transform(name, attrs,  # noqa: C901
             if param.kind == inspect.Parameter.VAR_KEYWORD:
                 var_kw = param
         if var_pos is None or var_kw is None:
-            raise DaskPipesException(
+            raise MldagException(
                 "{name}.fit and {name}.transform must "
                 "have variadic positional and keyword arguments "
                 "(*args and **kwargs)".format(name=name))
@@ -64,16 +64,16 @@ def validate_fit_transform(name, attrs,  # noqa: C901
                 msg = ("{name}.fit and {name}.transform are not "
                        "allowed to have default arguments ({param.name} = {param.default}). "
                        "Remove default values".format(name=name, param=param))
-                raise DaskPipesException(msg)
+                raise MldagException(msg)
 
 
-class PipelineInput(namedtuple("_PipelineInput", ['name',
-                                                  'downstream_slot',
-                                                  'downstream_node',
-                                                  'default',
-                                                  'kind',
-                                                  'type',
-                                                  'desc'])):
+class MLDagInput(namedtuple("MLDagInput", ['name',
+                                           'downstream_slot',
+                                           'downstream_node',
+                                           'default',
+                                           'kind',
+                                           'type',
+                                           'desc'])):
     """
     Analog of inspect.Parameter, but includes reference to downstream node and it's slot
     """
@@ -87,7 +87,7 @@ class PipelineInput(namedtuple("_PipelineInput", ['name',
         return '<{}>'.format(str(self))
 
 
-PipelineOutput = namedtuple("PipelineOutput", ['name', 'upstream_node', 'upstream_slot', 'type', 'desc'])
+MLDagOutput = namedtuple("MLDagOutput", ['name', 'upstream_node', 'upstream_slot', 'type', 'desc'])
 
 
 def getcallargs_inverse(func, **callargs) -> Tuple[Iterable[Any], Dict[str, Any]]:  # noqa C901
@@ -126,20 +126,20 @@ def getcallargs_inverse(func, **callargs) -> Tuple[Iterable[Any], Dict[str, Any]
             args.append(values)
         elif parameter.kind == inspect.Parameter.VAR_POSITIONAL:
             if missing_positional:
-                raise DaskPipesException("Cannot fill variadic positional {}, "
-                                         "since preceding positional "
-                                         "parameters are missing".format(parameter.name))
+                raise MldagException("Cannot fill variadic positional {}, "
+                                     "since preceding positional "
+                                     "parameters are missing".format(parameter.name))
             try:
                 args.extend(values)
             except TypeError:
-                raise DaskPipesException(
+                raise MldagException(
                     "Tried to pass non-terable parameter to variadic positional argument '{}'".format(
                         parameter.name)) from None
         elif parameter.kind == inspect.Parameter.VAR_KEYWORD:
             try:
                 kwargs = {**kwargs, **values}
             except TypeError:
-                raise DaskPipesException(
+                raise MldagException(
                     "Tried to pass non-mapping parameter to variadic key-word argument '{}'".format(
                         parameter.name)) from None
         else:
@@ -218,7 +218,7 @@ def _split_signature_by_kind(parameters) -> Dict[str, List[inspect.Parameter]]:
     return params_by_kind
 
 
-def get_new_docstring(pipeline, original_doc, new_parameters: List[inspect.Parameter]):  # noqa: C901
+def get_new_docstring(mldag, original_doc, new_parameters: List[inspect.Parameter]):  # noqa: C901
     # Handle numpy docstrings
     if original_doc:
         docstring = numpydoc.docscrape.NumpyDocString(original_doc)
@@ -230,7 +230,7 @@ def get_new_docstring(pipeline, original_doc, new_parameters: List[inspect.Param
     parameter_desc = dict()
     parameter_types = dict()
 
-    for input in pipeline.inputs:
+    for input in mldag.inputs:
         if input.desc and input.desc != inspect._empty:
             if input.name not in parameter_desc:
                 parameter_desc[input.name] = list()
@@ -266,14 +266,14 @@ def get_new_docstring(pipeline, original_doc, new_parameters: List[inspect.Param
     return docstring
 
 
-def get_input_signature(pipeline):  # noqa: C901
+def get_input_signature(mldag):  # noqa: C901
     """
     Get list of parameters and their mapping to specific node inputs
 
     Parameters
     ----------
-    pipeline
-        Pipeline to get input from
+    mldag
+        MLDag to get input from
 
     Returns
     -------
@@ -288,18 +288,18 @@ def get_input_signature(pipeline):  # noqa: C901
 
     """
     # Split input by kind
-    original_signature = list(inspect.signature(pipeline.__class__.transform).parameters.values())
+    original_signature = list(inspect.signature(mldag.__class__.transform).parameters.values())
     reserved_names = {param.name for param in original_signature}
 
-    # Pipeline may contain some custom parameters, take them into account by using original signature
+    # MLDag may contain some custom parameters, take them into account by using original signature
     params_by_kind = _split_signature_by_kind(original_signature)
 
-    if len(pipeline.inputs) > 0:
-        # Our pipeline has some inputs, remove default *args, **kwargs parameters
+    if len(mldag.inputs) > 0:
+        # Our mldag has some inputs, remove default *args, **kwargs parameters
         # and populate signature with new parameters
         params_by_kind['var_pos'] = list()  # Remove default 'args' parameter
         params_by_kind['var_key'] = list()  # Remove default 'kwargs' parameter
-        for k, v in _split_signature_by_kind(pipeline.inputs).items():
+        for k, v in _split_signature_by_kind(mldag.inputs).items():
             # Validate param names
             for param in v:
                 if param.kind == inspect.Parameter.VAR_KEYWORD:
@@ -311,13 +311,13 @@ def get_input_signature(pipeline):  # noqa: C901
                 if param.name in reserved_names \
                         and param.kind != inspect.Parameter.VAR_POSITIONAL \
                         and param.kind != inspect.Parameter.VAR_KEYWORD:
-                    raise DaskPipesException(
-                        "Parameter name {} is reserved by pipeline's fit signature".format(param.name))
+                    raise MldagException(
+                        "Parameter name {} is reserved by mldag's fit signature".format(param.name))
             params_by_kind[k].extend(v)
 
-    def _rename_params(new_name, params: List[Union[inspect.Parameter, PipelineInput]]):
+    def _rename_params(new_name, params: List[Union[inspect.Parameter, MLDagInput]]):
         """
-        Returns inspect.parameter or PipelineInput with new name
+        Returns inspect.parameter or MLDagInput with new name
         Useful for renaming all variadic parameters of sub-nodes to same standard name i.e.: args, kwargs
         to allow them to merge
 
@@ -325,7 +325,7 @@ def get_input_signature(pipeline):  # noqa: C901
         ----------
         new_name : str
             New name to assign to parameters
-        params : List of inspect.Parameter or PipelineInput
+        params : List of inspect.Parameter or MLDagInput
             List of parameters to rename
 
         Returns
@@ -352,9 +352,9 @@ def get_input_signature(pipeline):  # noqa: C901
                         annotation=param.annotation,
                     )
                 )
-            if isinstance(param, PipelineInput):
+            if isinstance(param, MLDagInput):
                 new_param_list.append(
-                    PipelineInput(
+                    MLDagInput(
                         name=new_name,
                         downstream_slot=param.downstream_slot,
                         downstream_node=param.downstream_node,
@@ -368,7 +368,7 @@ def get_input_signature(pipeline):  # noqa: C901
 
     var_pos_names = set()
     if len(params_by_kind['var_pos']) > 1:
-        # If pipeline has multiple positional variadic arguments, name them all 'args', so they will merge
+        # If mldag has multiple positional variadic arguments, name them all 'args', so they will merge
         # Since multiple positional variadic parameters are not allowed
         var_pos_names = {param.name for param in params_by_kind['var_pos']}
         if len(var_pos_names) > 1:
@@ -376,7 +376,7 @@ def get_input_signature(pipeline):  # noqa: C901
 
     var_key_names = set()
     if len(params_by_kind['var_key']) > 1:
-        # If pipeline has multiple variadic keyword arguments, name them all 'kwargs', so they will merge
+        # If mldag has multiple variadic keyword arguments, name them all 'kwargs', so they will merge
         # Since multiple keyword variadic parameters are not allowed
         var_key_names = {param.name for param in params_by_kind['var_key']}
         if len(var_key_names) > 1:
@@ -406,14 +406,14 @@ def get_input_signature(pipeline):  # noqa: C901
             params_by_kind[next_cat].extend([i for i in params_by_kind[prev_cat] if i.name in name_inters])
             params_by_kind[prev_cat] = [i for i in params_by_kind[prev_cat] if i.name not in name_inters]
 
-    # Convert list of mixed parameters and PipelineInputs to two dictionaries
+    # Convert list of mixed parameters and MLDagInputs to two dictionaries
     params_downstream: Dict[str, List[Tuple[Any, str]]] = dict()  # Parameter name: Downstream node slot
     new_params_by_kind: Dict[str: List[inspect.Parameter]] = dict()  # Parameter kind: list   of parameters
 
     for cat, params in params_by_kind.items():
         new_params = list()
         for param in params:
-            if isinstance(param, PipelineInput):
+            if isinstance(param, MLDagInput):
                 param_name = param.name
                 if param_name not in params_downstream:
                     params_downstream[param_name] = list()
@@ -464,7 +464,7 @@ def get_input_signature(pipeline):  # noqa: C901
                 param_names.update(var_key_names)
             for param_name in param_names:
                 if param_name in param_dups and param_dups[param_name] != param.kind:
-                    raise DaskPipesException("Parameter {} cannot be {} and {} at the same time".format(
+                    raise MldagException("Parameter {} cannot be {} and {} at the same time".format(
                         param_name, param_dups[param_name].name, param.kind.name))
                 else:
                     param_dups[param_name] = param.kind
@@ -474,7 +474,7 @@ def get_input_signature(pipeline):  # noqa: C901
     for cat in ARG_ORDER:
         rv.extend(params_by_kind[cat])
 
-    fit_docstring = get_new_docstring(pipeline, pipeline.fit.__func__.__doc__, rv)
-    transform_docstring = get_new_docstring(pipeline, pipeline.transform.__func__.__doc__, rv)
+    fit_docstring = get_new_docstring(mldag, mldag.fit.__func__.__doc__, rv)
+    transform_docstring = get_new_docstring(mldag, mldag.transform.__func__.__doc__, rv)
 
     return rv, params_downstream, fit_docstring, transform_docstring

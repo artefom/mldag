@@ -4,18 +4,15 @@ import os
 import shutil
 from collections import namedtuple
 from types import MethodType
-from typing import Union, Dict, Any, Callable, List, Type, Optional
+from typing import Union, Dict, Any, Callable, List, Optional
 
-import dask.dataframe as dd
-import numpy as np
 import numpydoc.docscrape
-import yaml
 
-from dask_pipes.exceptions import DaskPipesException
+from mldag.exceptions import MldagException
 
-__all__ = ['read_file', 'dump_yaml', 'load_yaml', 'cleanup_empty_dirs', 'try_create_dir', 'import_class', 'is_int',
+__all__ = ['cleanup_empty_dirs', 'try_create_dir', 'import_class',
            'assert_subclass', 'get_arguments_description', 'get_return_description', 'returns',
-           'ReturnParameter', 'InputParameter', 'is_categorical', 'replace_signature', 'to_snake_case',
+           'ReturnParameter', 'InputParameter', 'replace_signature', 'to_snake_case',
            'docstring_to_str',
            'set_function_return',
            'INSPECT_EMPTY_PARAMETER', ]
@@ -67,20 +64,6 @@ def replace_signature(func, sign, doc):
     wrapped.__doc__ = doc
     wrapped.__name__ = func.__name__
     return wrapped
-
-
-def is_categorical(type: Type) -> bool:
-    try:
-        if (np.issubdtype(type, np.number) or
-                np.issubdtype(type, np.bool_) or
-                np.issubdtype(type, np.datetime64) or
-                isinstance(type, int) or
-                isinstance(type, bool) or
-                isinstance(type, float)):
-            return False
-    except TypeError:
-        pass
-    return True
 
 
 def get_arguments_description(func: Callable) -> List[InputParameter]:
@@ -175,12 +158,12 @@ def _get_return_desc_annotation(func: Callable) -> Optional[List[ReturnParameter
 
     if isinstance(return_type, tuple) or isinstance(return_type, list):
         if len(return_type) == 0:
-            raise DaskPipesException("return type '{}' of {} not understood".format(repr(return_type), func_name))
+            raise MldagException("return type '{}' of {} not understood".format(repr(return_type), func_name))
         rv = list()
         for v in return_type:
             if isinstance(v, tuple) or isinstance(v, list):
                 if len(v) != 2:
-                    raise DaskPipesException(
+                    raise MldagException(
                         "Return type annotations must be "
                         "((var_name, var_type1), (var_name2, var_type2))")
                 var_name = v[0]
@@ -191,7 +174,7 @@ def _get_return_desc_annotation(func: Callable) -> Optional[List[ReturnParameter
             else:
                 raise NotImplementedError()
             if var_name in set((i[0] for i in rv)):
-                raise DaskPipesException("duplicate return name: {} of {}".format(var_name, func_name))
+                raise MldagException("duplicate return name: {} of {}".format(var_name, func_name))
             rv.append(ReturnParameter(name=var_name, type=var_type, desc=None))
         return rv
     elif isinstance(return_type, dict):
@@ -379,19 +362,9 @@ def get_return_description(func: Callable) -> List[ReturnParameter]:
 def assert_subclass(obj, cls):
     if VALIDATE_SUBCLASSES:
         if not isinstance(obj, cls):
-            raise DaskPipesException(
+            raise MldagException(
                 "Expected subclass of {}; got {}".format(cls.__name__,
                                                          obj.__class__.__name__))
-
-
-def is_int(x):
-    try:
-        if isinstance(x, float) or np.issubdtype(x, np.floating):
-            return x == int(x)
-        int(x)
-        return True
-    except (ValueError, TypeError, OverflowError):
-        return False
 
 
 def import_class(module_name, class_name):
@@ -427,30 +400,3 @@ def convert_to_list(x):
     if isinstance(x, dict):
         return {k: convert_to_list(v) for k, v in x.items()}
     return x
-
-
-def dump_yaml(path, meta: Union[list, dict]):
-    meta = convert_to_list(meta)
-    with open(path, 'w') as f:
-        yaml.dump(meta, f)
-
-
-def load_yaml(path) -> Dict[Any, Any]:
-    with open(path, 'r') as f:
-        rv = yaml.load(f, Loader=yaml.FullLoader)
-        if rv is None:
-            return dict()
-        return rv
-
-
-def read_file(path):
-    ext = os.path.splitext(path)[1].lower()
-    if ext == '.csv':
-        return None, dd.read_csv(path)
-    if ext == '.hdf':
-        rv = dd.read_hdf(path, 'df')
-        return rv.index.name, rv
-    if ext == '.parquet':
-        rv = dd.read_parquet(path)
-        return rv.index.name, rv
-    raise ValueError("Extension %s not recognized" % ext)

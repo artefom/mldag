@@ -1,80 +1,52 @@
-Dask-pipes
+MLDAG
 ====================================
-**architectural sugar for dask out of memory processing workflow**
+**Lightweight Directed Acyclic Graphs with fit\transform support**
 
-![](https://github.com/artefom/dask-pipes/workflows/unit-test/badge.svg?branch=master)
+![Test status](https://github.com/artefom/mldag/workflows/unit-test/badge.svg?branch=master)
 
-Usage
+Why useful
 ------------------------------------
+Most ML engineering pipelines require fit\transform methods. It would be great to be able to organize classes with
+fit\transform methods in graph structure and execute fit and transform separately.
 
-### Processing pipeline example
+MLDAG allows to do just that.
+
 ```python
-import numpy as np
-import pandas as pd
-import dask.dataframe as dd
+import mldag
 
-# Use functions from dask ml
-import dask_ml
 
-# Dask-pipes stuff
-import dask_pipes as dp
-from dask_pipes import column_selection as cs
-from dask_pipes.nodes import AddNaIndicator, RobustCategoriser, DateProcessor, AddNaCategory
+class Preprocess:
+    def fit(self, dataset):
+        # Estimate some parameters
+        pass
 
-def get_sample_df():
-    """ Creates sample dataset """
-    part_1 = pd.DataFrame([['a',  2.0,    2],
-                           ['a',  4.0,    100]],columns=['c1','c2','c3'])
-    part_2 = pd.DataFrame([[None, 2.0,    np.nan],
-                           ['c',  np.nan, 20]],columns=['c1','c2','c3'])
-    return dd.concat([part_1, part_2])
+    def transform(self, dataset):
+        # Apply learned transformation to dataset
+        return dataset
 
-pipeline = dp.Pipeline()
 
-categorize = RobustCategoriser()
-convert_dates = DateProcessor(retro_date_mapping={'c5': 'c7'})
+class Model:
+    def fit(self, dataset):
+        # Estimate some parameters
+        pass
 
-add_nullable_indicator = dp.as_node(dask_ml.compose.ColumnTransformer([
-    ('add_na_indicator', AddNaIndicator(), cs.Numeric & cs.Nullable)
-], remainder='passthrough'))
+    def transform(self, dataset):
+        # Apply learned transformation to dataset
+        return dataset
 
-add_na_cat = AddNaCategory()
-
-# FILLNA TRANSFORMER
-fillna = dp.as_node(dask_ml.compose.ColumnTransformer([
-    ('fillna_numeric', dask_ml.impute.SimpleImputer(strategy='mean'),
-     cs.Numeric),
-    ('fillna_str', dask_ml.impute.SimpleImputer(strategy='constant', fill_value='<Unknown>'),
-     cs.Categorical & cs.Nullable),
-], remainder='passthrough'), name="FillNa")
-	
-# STANDARD SCALER
-scale = dp.as_node(dask_ml.compose.ColumnTransformer([
-    ('scale_numeric', dask_ml.preprocessing.StandardScaler(),
-     cs.Numeric),
-], remainder='passthrough'), name="ScaleNumeric")
-
-one_hot = dp.as_node(dask_ml.preprocessing.DummyEncoder(drop_first=True))
-
-scale_one_hot = dp.as_node(dask_ml.compose.ColumnTransformer([
-    ('scale_one_hot', dask_ml.preprocessing.MinMaxScaler(feature_range=(-1, 1)),
-     cs.Numeric & cs.Binary),
-], remainder='passthrough'), name="ScaleNumericBinary")
 
 # Create pipeline
-(pipeline >> categorize >> add_nullable_indicator >>
- add_na_cat >> fillna >> scale >> one_hot >> scale_one_hot >> pipeline['normalized'])
+dag = mldag.MLDag()
 
+# Initialize nodes
+nodes = {
+    'preprocess': mldag.as_node(Preprocess()),
+    'model': mldag.as_node(Model())
+}
 
-ds = get_sample_df()
-pipeline.fit(ds)
-res = pipeline.transform(ds)
-res.outputs['normalized'].compute()
-# -1.0  -1.0   1.0  -1.0  -0.816497  -1.048240
-# -1.0  -1.0   1.0  -1.0   1.632993   1.608507
-# -1.0   1.0  -1.0  -1.0  -0.816497   0.000000
-#  1.0  -1.0  -1.0   1.0   0.000000  -0.560266
+dag >> nodes['preprocess'] >> nodes['model'] >> dag
+
+dag.show()
 ```
 
-Visualisation
-------------------------------------
+![Simple example](https://raw.githubusercontent.com/artefom/mldag/master/examples/simple_example.svg)

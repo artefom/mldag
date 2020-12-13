@@ -20,19 +20,19 @@ style:
     ports: false
     port-labels: true
     port-labels-minmal: true
-    hide-pipeline-io: false
+    hide-mldag-io: false
     show-class: true
-    cluster-pipeline-ports: true
-    max-pipeline-depth: -1
+    cluster-mldag-ports: true
+    max-mldag-depth: -1
 
-  pipeline-input:
+  mldag-input:
     shape: "cds"
     style: 'filled'
     color: *accent3-outline
     fillcolor: *accent3-primary
     fontcolor: *accent3-text
 
-  pipeline-output:
+  mldag-output:
     shape: "cds"
     style: 'filled'
     orientation: "180"
@@ -51,7 +51,7 @@ style:
     fontcolor: *accent1-text
     color: *accent1-outline
   node-mro:
-    PipelineNode:
+    MLDagNode:
       shape: "box3d"
       style: "filled, solid"
       cellborder: "0"

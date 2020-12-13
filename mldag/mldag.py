@@ -3,12 +3,12 @@ from copy import deepcopy
 from typing import List, Optional, Dict, Any, Iterable
 from uuid import uuid4
 
-from dask_pipes.core import PipelineBase, NodeBase, NodeConnection, getcallargs_inverse
-from dask_pipes.display import display
-from dask_pipes.exceptions import DaskPipesException
-from dask_pipes.utils import ReturnParameter
+from mldag.core import MLDagBase, NodeBase, NodeConnection, getcallargs_inverse
+from mldag.display import display
+from mldag.exceptions import MldagException
+from mldag.utils import ReturnParameter
 
-__all__ = ['Pipeline']
+__all__ = ['MLDag']
 
 
 def _parse_node_output(node, output):
@@ -29,7 +29,7 @@ def _parse_node_output(node, output):
 
     Raises
     -------
-    DaskPipesException
+    MldagException
         If function result length does not match expected number outputs defined in node.outputs
         If function result dictionary keys does not match keys defined in node node.outputs
     """
@@ -41,44 +41,48 @@ def _parse_node_output(node, output):
     if isinstance(output, list) or isinstance(output, tuple):  # In case returned list
         # Check that output length matches
         if len(output) != len(expected_result):
-            raise DaskPipesException(
-                "{}.transform result length does not match expected. Expected {}, got {}".format(
-                    node,
-                    ['{}: {}'.format(i.name, i.type) for i in expected_result],
-                    [i.__class__.__name__ for i in output]
-                ))
+            if len(expected_result) == 1:
+                # User probably expects that we treat whole output as single
+                output = (output,)
+            else:
+                raise MldagException(
+                    "{}.transform result length does not match expected. Expected {}, got {}".format(
+                        node,
+                        ['{}: {}'.format(i.name, i.type) for i in expected_result],
+                        [i.__class__.__name__ for i in output]
+                    ))
         output = {k: v for k, v in zip(expected_keys, output)}
     elif isinstance(output, dict):  # In case returned dict
         got_keys = set(output.keys())
         # Check that keys match
         if set(expected_keys) != got_keys:
-            raise DaskPipesException(
+            raise MldagException(
                 "{}.transform result does not match expected. Expected keys: {}, received: {}".format(
                     node,
                     expected_keys, got_keys
                 ))
     else:
-        raise DaskPipesException("Unknown return type: {}".format(output.__class__.__name__))
+        raise MldagException("Unknown return type: {}".format(output.__class__.__name__))
 
     return output
 
 
 def _check_arguements(node, edge, node_arguments, downstream_node, node_result):
     # if downstream_node.name not in node_arguments:
-    #     raise DaskPipesException("Pipeline does not contain {}".format(downstream_node))
+    #     raise MldagException("MLDag does not contain {}".format(downstream_node))
     if edge.upstream_slot not in node_result:
         if len(node_result) == 0:
-            raise DaskPipesException("Node {} did not return anything!".format(node))
-        raise DaskPipesException(
+            raise MldagException("Node {} did not return anything!".format(node))
+        raise MldagException(
             "Node {} did not return expected {}; "
             "recieved {}".format(node, edge.upstream_slot, list(node_result.keys())))
 
 
-class PipelineRun:
+class MLDagRun:
     """
-    Manages pipeline computation.
+    Manages mldag computation.
     Derives proper node output to node parameter piping (including key-word and positional arguments)
-    Stores node result and pipeline result as a whole after execution
+    Stores node result and mldag result as a whole after execution
     """
 
     def __init__(self, run_id: str):
@@ -117,7 +121,7 @@ class PipelineRun:
         try:
             downstream_args[downstream_slot].extend(val)
         except TypeError:
-            raise DaskPipesException(
+            raise MldagException(
                 "{} returned non-iterable "
                 "as variadic '{}'. "
                 "Expected tuple, received {}".format(node, upstream_slot,
@@ -149,12 +153,12 @@ class PipelineRun:
         try:
             for k, v in val.items():
                 if k in downstream_dict:
-                    raise DaskPipesException(
+                    raise MldagException(
                         "Duplicate key-word argument "
                         "'{}' for parameter '{}'".format(k, downstream_slot))
                 downstream_dict[k] = v
         except AttributeError:
-            raise DaskPipesException(
+            raise MldagException(
                 "{} returned non-mapping "
                 "as variadic '{}'. "
                 "Expected dict; received {}".format(node, upstream_slot,
@@ -179,7 +183,7 @@ class PipelineRun:
             Used for exception message
         """
         if downstream_slot in downstream_args:
-            raise DaskPipesException(
+            raise MldagException(
                 "Duplicate argument for parameter '{}'".format(downstream_slot))
         downstream_args[downstream_slot] = val
 
@@ -229,9 +233,9 @@ class PipelineRun:
                 val = {upstream_slot: val}
 
         {
-            inspect.Parameter.VAR_POSITIONAL: PipelineRun._handle_var_pos,
-            inspect.Parameter.VAR_KEYWORD: PipelineRun._handle_var_key,
-        }.get(downstream_kind, PipelineRun._handle_pos_or_key)(
+            inspect.Parameter.VAR_POSITIONAL: MLDagRun._handle_var_pos,
+            inspect.Parameter.VAR_KEYWORD: MLDagRun._handle_var_key,
+        }.get(downstream_kind, MLDagRun._handle_pos_or_key)(
             downstream_args,
             downstream_slot,
             val,
@@ -267,7 +271,7 @@ class PipelineRun:
         node_result_dict: Dict[str, Any] = _parse_node_output(node, node_result)
 
         if not isinstance(node_result_dict, dict):
-            raise DaskPipesException(
+            raise MldagException(
                 "Invalid return. Expected {}, received {}".format(dict.__name__,
                                                                   node_result_dict.__class__.__name__))
 
@@ -297,17 +301,17 @@ class PipelineRun:
 
     def _set_inputs(self, node_inputs, graph_inputs):
         """
-        Infer pipeline inputs from node inputs.
+        Infer mldag inputs from node inputs.
         Updates self.inputs
         """
-        # Infer pipeline inputs
+        # Infer mldag inputs
         for input in graph_inputs:
             if input.name not in self.inputs:
                 self.inputs[input.name] = node_inputs[input.downstream_node.name][input.downstream_slot]
 
     def _set_outputs(self, graph_outputs, node, node_result_dict):
         """
-        Infer pipeline outputs from node outputs
+        Infer mldag outputs from node outputs
         Updates self.outputs
         """
         # Assign outputs
@@ -325,7 +329,7 @@ class PipelineRun:
         node_callargs = self.node_inputs[node.name]
 
         if len(node_callargs) == 0:
-            raise DaskPipesException("No input for node {}".format(node))
+            raise MldagException("No input for node {}".format(node))
 
         # Convert node_callargs to match signature (properly handles *args and **kwargs)
         node_input = getcallargs_inverse(node.transform, **node_callargs)
@@ -352,10 +356,10 @@ class PipelineRun:
                  compute_fit=False,
                  transform_leaf_nodes=False):
         """
-        Run pipeline computation
+        Run mldag computation
         """
         if self._computed:
-            raise DaskPipesException("Run already computed")
+            raise MldagException("Run already computed")
         self._computed = True
 
         # Populate initial node inputs from run arguments
@@ -364,7 +368,7 @@ class PipelineRun:
 
         self._set_inputs(self.node_inputs, graph.inputs)
 
-        for node in PipelineWidthFirstIterator(graph):
+        for node in MLDagWidthFirstIterator(graph):
             node: NodeBase
             try:
                 self._compute_node(
@@ -376,7 +380,7 @@ class PipelineRun:
                     compute_transform=not node.is_leaf() or transform_leaf_nodes
                 )
             except Exception as ex:
-                raise DaskPipesException("Error occurred during {}".format(node)) from ex
+                raise MldagException("Error occurred during {}".format(node)) from ex
 
         return self
 
@@ -384,12 +388,12 @@ class PipelineRun:
         return repr(self)
 
     def __repr__(self):
-        return 'PipelineRun<{}>'.format(self.run_id[:5])
+        return 'MLDagRun<{}>'.format(self.run_id[:5])
 
 
-class PipelineWidthFirstIterator:
+class MLDagWidthFirstIterator:
     """
-    Iterator of pipeline nodes
+    Iterator of mldag nodes
     Iterates width-first by edge direction and node dependencies
 
     Vertex is visited only if all of its upstream vertices and dependencies are visited
@@ -403,8 +407,8 @@ class PipelineWidthFirstIterator:
 
         Parameters
         -----------------------------
-        graph : Pipeline
-            Pipeline to itearte
+        graph : MLDag
+            MLDag to itearte
         starting_nodes : Optional[Iterable]
             Vertices to start iteration from
             if None (default) - starts iteration from vertices with no upstream dependencies
@@ -455,9 +459,9 @@ class PipelineWidthFirstIterator:
         return next_vertex
 
 
-class Pipeline(PipelineBase):
+class MLDag(MLDagBase):
     """
-    Pipeline is a graph structure, containing relationships between NodeBase (vertices)
+    MLDag is a graph structure, containing relationships between NodeBase (vertices)
     with NodeConnection as edges
 
     Defines fit and transform methods which iterate vertices in width-first order,
@@ -518,28 +522,28 @@ class Pipeline(PipelineBase):
 
     def fit(self, *args, run_id=None, **kwargs):
         """
-        Main method for fitting pipeline.
+        Main method for fitting mldag.
         Sequentially calls fit and transform in width-first order
 
         Parameters
         ----------
         args
-            pipeline positional input to pass to input nodes
+            mldag positional input to pass to input nodes
         run_id : optional, str
             run identifier string
         kwargs
-            pipeline key-word input to  pass to input nodes
+            mldag key-word input to  pass to input nodes
 
         Returns
         -------
-        run : PipelineRun
-            computed pipeline run
+        run : MLDagRun
+            computed mldag run
         """
-        # Parse pipeline arguments to arguments of specific nodes
+        # Parse mldag arguments to arguments of specific nodes
         node_args = self._parse_arguments(*args, **kwargs)
 
         run_id = run_id or self._gen_run_id()
-        run = PipelineRun(run_id=run_id)
+        run = MLDagRun(run_id=run_id)
 
         fit_func, transform_func = self._mixins_initialize(run_id)
         try:
@@ -562,23 +566,23 @@ class Pipeline(PipelineBase):
         Parameters
         ----------
         args
-            pipeline positional input to pass to input nodes
+            mldag positional input to pass to input nodes
         run_id : str, optional
-            pipeline run identifier
+            mldag run identifier
         kwargs
-            pipeline key-word input to  pass to input nodes
+            mldag key-word input to  pass to input nodes
 
         Returns
         -------
-        run : PipelineRun
-            computed pipeline run containing all node outputs
+        run : MLDagRun
+            computed mldag run containing all node outputs
 
         """
-        # Parse pipeline arguments to arguments of specific nodes
+        # Parse mldag arguments to arguments of specific nodes
         node_args = self._parse_arguments(*args, **kwargs)
 
         run_id = run_id or self._gen_run_id()
-        run = PipelineRun(run_id=run_id)
+        run = MLDagRun(run_id=run_id)
 
         fit_func, transform_func = self._mixins_initialize(run_id)
 
@@ -599,18 +603,18 @@ class Pipeline(PipelineBase):
              show_ports=False,
              show_port_labels=True,
              port_labels_minimal=True,
-             show_pipeline_io=True,
+             show_mldag_io=True,
              show_class=True,
              class_max_len=0,
-             cluster_pipeline_ports=True,
-             max_pipeline_depth=-1):
+             cluster_mldag_ports=True,
+             max_mldag_depth=-1):
         return display(self,
                        renderer=renderer,
                        show_ports=show_ports,
                        show_port_labels=show_port_labels,
                        port_labels_minimal=port_labels_minimal,
-                       show_pipeline_io=show_pipeline_io,
+                       show_mldag_io=show_mldag_io,
                        show_class=show_class,
                        class_max_len=class_max_len,
-                       cluster_pipeline_ports=cluster_pipeline_ports,
-                       max_pipeline_depth=max_pipeline_depth)
+                       cluster_mldag_ports=cluster_mldag_ports,
+                       max_mldag_depth=max_mldag_depth)

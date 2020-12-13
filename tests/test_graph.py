@@ -1,38 +1,9 @@
 import os
 
-import dask.dataframe as dd
-import numpy as np
-import pandas as pd
 import pytest
 
-import dask_pipes as dp
-from dask_pipes.exceptions import DaskPipesException
-
-ds1 = pd.DataFrame([['cat5', -0.08791349765766582, 1],
-                    ['cat2', -0.45607955436914216, np.nan],
-                    ['cat4', 1.0365671323315593, 0],
-                    ['cat1', -0.024157518723391634, 1],
-                    ['cat4', -1.0746881596620674, 1],
-                    ['cat2', -1.3745769333109847, 1],
-                    ['cat2', -0.8096348940348146, 1],
-                    ['cat2', 0.9389351138213718, 1],
-                    ['cat1', 0.0816240934021167, 0],
-                    ['cat2', 0.23782656204987004, 1]],
-                   columns=['cat', 'normal', 'normal2'])
-ds2 = pd.DataFrame([['cat4', 0.0925574898889439, -1],
-                    ['cat3', 0.5267352833224139, np.nan],
-                    ['cat3', -0.6058660301330128, 1],
-                    ['cat1', 0.8961509434493576, 1],
-                    ['cat3', -0.0027012581656900036, 1],
-                    ['cat3', 0.021680712905233424, np.nan],
-                    ['cat3', -1.348967911605108, 1],
-                    ['cat2', 1.6863322137777539, np.nan],
-                    ['cat5', -0.5088200779053001, 1],
-                    ['cat1', -0.16265239148925334, np.nan]],
-                   columns=['cat', 'normal', 'normal2'])
-ds1['normal'] += 2
-ds2['normal'] += 5
-test_ds = dd.concat([ds1, ds2])
+import mldag
+from mldag.exceptions import MldagException
 
 tmp_folder = 'tmp'
 if not os.path.exists(tmp_folder):
@@ -50,13 +21,13 @@ ds_name = 'test_ds'
 
 
 def test_edges_3():
-    f1 = dp.core.Graph()
-    v1 = dp.core.VertexBase()
-    v2 = dp.core.VertexBase()
+    f1 = mldag.core.Graph()
+    v1 = mldag.core.VertexBase()
+    v2 = mldag.core.VertexBase()
     v1.graph = f1
     v2.graph = f1
 
-    e = dp.core.EdgeBase(v1, v2)
+    e = mldag.core.EdgeBase(v1, v2)
     assert len(f1.edges) == 0
 
     f1.add_edge(e)
@@ -65,70 +36,70 @@ def test_edges_3():
 
 
 def test_edges_negative_2():
-    f1 = dp.core.Graph()
-    v1 = dp.core.VertexBase()
+    f1 = mldag.core.Graph()
+    v1 = mldag.core.VertexBase()
     v1.graph = f1
-    v2 = dp.core.VertexBase()
+    v2 = mldag.core.VertexBase()
 
-    f2 = dp.core.Graph()
-    v3 = dp.core.VertexBase()
+    f2 = mldag.core.Graph()
+    v3 = mldag.core.VertexBase()
     v3.graph = f2
-    v4 = dp.core.VertexBase()
+    v4 = mldag.core.VertexBase()
 
-    e0 = dp.core.EdgeBase()
-    with pytest.raises(DaskPipesException):
+    e0 = mldag.core.EdgeBase()
+    with pytest.raises(MldagException):
         f1.add_edge(e0)
 
-    with pytest.raises(DaskPipesException):
+    with pytest.raises(MldagException):
         e0.graph = f1
 
-    e1 = dp.core.EdgeBase(v1, v4, graph=f1)
+    e1 = mldag.core.EdgeBase(v1, v4, graph=f1)
 
-    with pytest.raises(DaskPipesException):
+    with pytest.raises(MldagException):
         f2.add_edge(e1)
 
     f1.add_edge(e1)
 
     v1.set_downstream(v2)
 
-    with pytest.raises(DaskPipesException):
+    with pytest.raises(MldagException):
         v3.set_downstream(v4)
 
 
 def test_edges_negative():
-    f1 = dp.core.Graph()
-    v1 = dp.core.VertexBase()
+    f1 = mldag.core.Graph()
+    v1 = mldag.core.VertexBase()
     v1.graph = f1
-    v2 = dp.core.VertexBase()
+    v2 = mldag.core.VertexBase()
 
-    f2 = dp.core.Graph()
-    v3 = dp.core.VertexBase()
+    f2 = mldag.core.Graph()
+    v3 = mldag.core.VertexBase()
     f2.add_vertex(v3)
-    v4 = dp.core.VertexBase()
+    v4 = mldag.core.VertexBase()
 
-    with pytest.raises(DaskPipesException):
-        e1 = dp.core.EdgeBase(v1, v3)
+    with pytest.raises(MldagException):
+        e1 = mldag.core.EdgeBase(v1, v3)
 
-    e2 = dp.core.EdgeBase(v2, v4)
+    e2 = mldag.core.EdgeBase(v2, v4)
     v2.graph = f1
     v4.graph = f2
 
-    with pytest.raises(DaskPipesException):
+    with pytest.raises(MldagException):
         f2.add_edge(e2)
 
 
 def test_edges():
-    g = dp.core.Graph()
-    v1 = dp.core.VertexBase()
+    g = mldag.core.Graph()
+    v1 = mldag.core.VertexBase()
     g.add_vertex(v1)
-    v2 = dp.core.VertexBase()
-    v3 = dp.core.VertexBase()
-    v4 = dp.core.VertexBase()
-    v5 = dp.core.VertexBase()
-    v6 = dp.core.VertexBase()
+    v2 = mldag.core.VertexBase()
+    v3 = mldag.core.VertexBase()
+    v4 = mldag.core.VertexBase()
+    v5 = mldag.core.VertexBase()
+    v6 = mldag.core.VertexBase()
 
-    edge1 = dp.core.EdgeBase(v1, v2)
-    edge2 = dp.core.EdgeBase(v3, v4)
+    edge1 = mldag.core.EdgeBase(v1, v2)
+    edge2 = mldag.core.EdgeBase(v3, v4)
 
     assert edge2._graph is None
     assert edge2._v1 == v3
@@ -136,7 +107,7 @@ def test_edges():
     assert edge2._v1._graph is None
     assert edge2._v2._graph is None
 
-    edge3 = dp.core.EdgeBase(v2, v3)
+    edge3 = mldag.core.EdgeBase(v2, v3)
     assert edge3._v1 == v2
     assert edge3._v2 == v3
     assert edge3._v1._graph is None
@@ -155,31 +126,31 @@ def test_edges():
     assert g.get_edge(v1, v2) == edge1
     assert g.edges == [g.get_edge(v1, v2), g.get_edge(v3, v4)]
 
-    edge4 = dp.core.EdgeBase(v5, v6, g)
+    edge4 = mldag.core.EdgeBase(v5, v6, g)
     assert g.get_edge(v5, v6) == edge4
     assert g.edges == [g.get_edge(v1, v2), g.get_edge(v3, v4), g.get_edge(v5, v6)]
 
-    with pytest.raises(DaskPipesException):
-        dp.core.EdgeBase(graph=g)
+    with pytest.raises(MldagException):
+        mldag.core.EdgeBase(graph=g)
 
-    g2 = dp.core.Graph()
+    g2 = mldag.core.Graph()
 
     edge4.graph = g
     assert edge4._graph == g
-    with pytest.raises(DaskPipesException):
+    with pytest.raises(MldagException):
         edge4.graph = g2
 
 
 def test_root_leaf():
-    g = dp.core.Graph()
-    v1_0 = dp.core.VertexBase()
-    v1_1 = dp.core.VertexBase()
-    v1_2 = dp.core.VertexBase()
-    v2 = dp.core.VertexBase()
-    v3 = dp.core.VertexBase()
-    v4_0 = dp.core.VertexBase()
-    v4_1 = dp.core.VertexBase()
-    v4_2 = dp.core.VertexBase()
+    g = mldag.core.Graph()
+    v1_0 = mldag.core.VertexBase()
+    v1_1 = mldag.core.VertexBase()
+    v1_2 = mldag.core.VertexBase()
+    v2 = mldag.core.VertexBase()
+    v3 = mldag.core.VertexBase()
+    v4_0 = mldag.core.VertexBase()
+    v4_1 = mldag.core.VertexBase()
+    v4_2 = mldag.core.VertexBase()
 
     v1_0.graph = g
     v4_2.graph = g
@@ -196,11 +167,11 @@ def test_root_leaf():
 
 
 def test_vertex_iter():
-    g = dp.core.Graph()
-    v1 = dp.core.VertexBase()
-    v2 = dp.core.VertexBase()
-    v3 = dp.core.VertexBase()
-    v4 = dp.core.VertexBase()
+    g = mldag.core.Graph()
+    v1 = mldag.core.VertexBase()
+    v2 = mldag.core.VertexBase()
+    v3 = mldag.core.VertexBase()
+    v4 = mldag.core.VertexBase()
 
     v1.graph = g
     v1.set_downstream(v2)
@@ -211,20 +182,20 @@ def test_vertex_iter():
     assert g.get_root_vertices() == [v1]
     assert g.get_leaf_vertices() == [v4]
 
-    assert list(dp.core.VertexWidthFirst(g)) == [v1, v2, v3, v4]
+    assert list(mldag.core.VertexWidthFirst(g)) == [v1, v2, v3, v4]
 
     v1.set_upstream(v4)
-    with pytest.raises(DaskPipesException):
-        list(dp.core.VertexWidthFirst(g))
+    with pytest.raises(MldagException):
+        list(mldag.core.VertexWidthFirst(g))
 
 
 def test_graph_1():
-    g = dp.core.Graph()
-    v1 = dp.core.VertexBase()
+    g = mldag.core.Graph()
+    v1 = mldag.core.VertexBase()
     g.add_vertex(v1)
-    v2 = dp.core.VertexBase()
-    v3 = dp.core.VertexBase()
-    v4 = dp.core.VertexBase()
+    v2 = mldag.core.VertexBase()
+    v3 = mldag.core.VertexBase()
+    v4 = mldag.core.VertexBase()
 
     assert g.edges == []
     assert g.vertices == [v1]
@@ -243,7 +214,7 @@ def test_graph_1():
     # Connect 1
     v2.set_upstream(v1)
     g.get_edge(v1, v2)
-    with pytest.raises(DaskPipesException):
+    with pytest.raises(MldagException):
         g.get_edge(v2, v1)
     assert g.get_downstream_vertices(v1) == [v2]
     assert g.get_upstream_vertices(v2) == [v1]
@@ -253,9 +224,9 @@ def test_graph_1():
     # Connect 2
     g.connect(v2, v3)
     g.get_edge(v2, v3)
-    with pytest.raises(DaskPipesException):
+    with pytest.raises(MldagException):
         g.get_edge(v3, v2)
-    with pytest.raises(DaskPipesException):
+    with pytest.raises(MldagException):
         g.get_edge(v1, v3)
     assert g.get_downstream_vertices(v2) == [v3]
     assert g.get_upstream_vertices(v3) == [v2]
@@ -263,9 +234,9 @@ def test_graph_1():
     assert g.vertices == [v1, v4, v2, v3]
 
     # Connect 3
-    g.add_edge(dp.core.EdgeBase(v3, v4))
+    g.add_edge(mldag.core.EdgeBase(v3, v4))
     g.get_edge(v3, v4)
-    with pytest.raises(DaskPipesException):
+    with pytest.raises(MldagException):
         g.get_edge(v4, v3)
     assert g.get_downstream_vertices(v3) == [v4]
     assert g.get_upstream_vertices(v4) == [v3]
@@ -273,12 +244,12 @@ def test_graph_1():
     assert g.vertices == [v1, v4, v2, v3]
 
     g.disconnect(v2, v3)
-    with pytest.raises(DaskPipesException):
+    with pytest.raises(MldagException):
         g.get_edge(v2, v3)
 
     assert g.get_downstream_vertices(v2) == []
     assert g.get_upstream_vertices(v3) == []
-    with pytest.raises(DaskPipesException):
+    with pytest.raises(MldagException):
         g.get_edge(v2, v3)
     assert g.edges == [g.get_edge(v1, v2), g.get_edge(v3, v4)]
     assert g.vertices == [v1, v4, v2, v3]
@@ -296,9 +267,9 @@ def test_graph_1():
     v1.graph = None
     assert v1._id is None
     assert g.get_upstream_vertices(v2) == []
-    with pytest.raises(DaskPipesException):
+    with pytest.raises(MldagException):
         g.get_downstream_vertices(v1)
-    with pytest.raises(DaskPipesException):
+    with pytest.raises(MldagException):
         g.get_edge(v1, v2)
     assert g.vertices == [v4, v2, v3]
     assert g.edges == [g.get_edge(v3, v4)]  # 3->4
@@ -312,7 +283,7 @@ def test_graph_1():
     # Add some more edges
     v4.set_downstream(v2)
     v3.set_downstream(v2)
-    with pytest.raises(DaskPipesException):
+    with pytest.raises(MldagException):
         v3.remove_upstream(v2)
 
     assert g.edges == [g.get_edge(v4, v2), g.get_edge(v3, v2)]
@@ -323,18 +294,18 @@ def test_graph_1():
 
 
 def test_graph_2():
-    pipeline1 = dp.core.Graph()
-    pipeline2 = dp.core.Graph()
-    op1 = dp.core.VertexBase()
-    op2 = dp.core.VertexBase()
+    pipeline1 = mldag.core.Graph()
+    pipeline2 = mldag.core.Graph()
+    op1 = mldag.core.VertexBase()
+    op2 = mldag.core.VertexBase()
 
-    with pytest.raises(DaskPipesException):
+    with pytest.raises(MldagException):
         op1.set_downstream(op2)
 
     op1.graph = pipeline1
     op2.graph = pipeline2
 
-    with pytest.raises(DaskPipesException):
+    with pytest.raises(MldagException):
         op1.set_upstream(op2)
 
     op2.graph = pipeline1

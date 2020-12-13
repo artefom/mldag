@@ -1,8 +1,8 @@
 import importlib
 from typing import Optional, List
 
-from dask_pipes.exceptions import DaskPipesException
-from dask_pipes.utils import assert_subclass
+from mldag.exceptions import MldagException
+from mldag.utils import assert_subclass
 
 __all__ = ['Graph', 'VertexBase', 'EdgeBase', 'VertexWidthFirst']
 
@@ -39,7 +39,7 @@ class VertexBase:
 
         Raises
         ------
-        DaskPipesException
+        MldagException
             If vertex is not subclass of VertexBase
 
         """
@@ -56,6 +56,12 @@ class VertexBase:
     def graph(self):
         return self._graph
 
+    def callback_graph_after_add(self):
+        """
+        Called when vertex is added to graph
+        """
+        pass
+
     @graph.setter
     def graph(self, graph):
         if graph is not None:
@@ -69,6 +75,7 @@ class VertexBase:
         if graph is not None:
             # Graph should handle attributes above
             graph.add_vertex(self)
+            self.callback_graph_after_add()
 
     def _set_relationship(self, other, upstream: bool, *args, **kwargs):
         """
@@ -95,23 +102,23 @@ class VertexBase:
 
         Raises
         ------
-        DaskPipesException
+        MldagException
             if vertex already belongs to another graph
-        DaskPipesException
+        MldagException
             If vertex is not subclass of VertexBase
 
         """
         VertexBase.validate(other)
         if self.graph is not None and other.graph is not None:
             if self.graph is not other.graph:
-                raise DaskPipesException(
+                raise MldagException(
                     "Tried to set relationship between vertices that are assigned to different graphs.")
         elif other.graph is not None:
             self.graph = other.graph
         elif self.graph is not None:
             other.graph = self.graph
         else:
-            raise DaskPipesException(
+            raise MldagException(
                 "Tried to set relationship between vertices that are not assigned to any graph.")
 
         if upstream:
@@ -137,9 +144,9 @@ class VertexBase:
 
         Raises
         ------
-        DaskPipesException
+        MldagException
             if vertex already belongs to another graph
-        DaskPipesException
+        MldagException
             If vertex is not subclass of VertexBase
 
         """
@@ -168,9 +175,9 @@ class VertexBase:
 
         Raises
         ------
-        DaskPipesException
+        MldagException
             if vertex already belongs to another graph
-        DaskPipesException
+        MldagException
             If vertex is not subclass of VertexBase
 
         """
@@ -191,9 +198,9 @@ class VertexBase:
 
         Raises
         ------
-        DaskPipesException
+        MldagException
             if vertex already belongs to another graph
-        DaskPipesException
+        MldagException
             If vertex is not subclass of VertexBase
 
         """
@@ -217,9 +224,9 @@ class VertexBase:
 
         Raises
         ------
-        DaskPipesException
+        MldagException
             if vertex already belongs to another graph
-        DaskPipesException
+        MldagException
             If vertex is not subclass of VertexBase
 
         """
@@ -240,9 +247,9 @@ class VertexBase:
 
         Raises
         ------
-        DaskPipesException
+        MldagException
             if vertex already belongs to another graph
-        DaskPipesException
+        MldagException
             If vertex is not subclass of VertexBase
         """
         self._remove_relationship(other, upstream=False)
@@ -282,7 +289,7 @@ class EdgeBase:
 
         Raises
         -------
-        DaskPipesException
+        MldagException
             if edge is not subclass of EdgeBase
 
         """
@@ -350,12 +357,12 @@ class EdgeBase:
             Graph.validate(graph)
 
         if self._v1 is None or self._v2 is None:
-            raise DaskPipesException(
+            raise MldagException(
                 "Tried to assign {} with one or both NULL vertices to graph {}".format(self, graph))
         if self._graph is not None and graph is not None:
             if self._graph is graph:
                 return
-            raise DaskPipesException("Edge already assigned to another graph. "
+            raise MldagException("Edge already assigned to another graph. "
                                      "Edge needs to be assigned with it's edges but "
                                      "implicit removal of vertices from graph not allowed")
         if self._graph is not None:
@@ -365,7 +372,7 @@ class EdgeBase:
         if graph is not None:
             # Graph should handle attributes above
             if self._v1 is None or self._v2 is None:
-                raise DaskPipesException(
+                raise MldagException(
                     "Tried to assign edge {} with one or both null vertices to graph".format(self))
             graph.add_edge(self)
 
@@ -380,21 +387,21 @@ class EdgeBase:
         Returns
         -------
 
-        DaskPipesException
+        MldagException
             If current edge and it's vertices belong to different graphs
             If vertices belong to different graphs
         """
         if self.graph is not None and (self._v1.graph is not None or self._v2.graph is not None):
             if self.graph is not self._v1.graph:
-                raise DaskPipesException(
+                raise MldagException(
                     "Tried to set relationship between edge and vertex that are assigned to different graphs.")
             if self.graph is not self._v2.graph:
-                raise DaskPipesException(
+                raise MldagException(
                     "Tried to set relationship between edge and vertex that are assigned to different graphs.")
         if (self._v1 is not None and self._v1.graph is not None) and \
                 (self._v2 is not None and self._v2.graph is not None):
             if self._v1.graph is not self._v2.graph:
-                raise DaskPipesException(
+                raise MldagException(
                     "Tried to set edge between vertices that are assigned to different graphs.")
 
     @upstream.setter
@@ -410,7 +417,7 @@ class EdgeBase:
         VertexBase.validate(vertex)
         if self._graph is not None:
             if vertex is None:
-                raise DaskPipesException("Cannot assign vertex of already added to graph edge to None. "
+                raise MldagException("Cannot assign vertex of already added to graph edge to None. "
                                          "Either assign it to another vertex, or remove edge from graph")
             self._graph.remove_edge(self)
         self._v1 = vertex
@@ -456,14 +463,14 @@ class VertexWidthFirst:
         starting_vertices : optional, Iterable
             starting vertices to begin iteration from
         """
-        self.pipeline = graph
+        self.graph = graph
         self.seen = set()
         self.next_vertices = starting_vertices
 
         if self.next_vertices is None:
-            self.next_vertices = list(self.pipeline.get_root_vertices())
+            self.next_vertices = list(self.graph.get_root_vertices())
             if len(self.next_vertices) == 0:
-                raise DaskPipesException("Graph has no root vertices, specify starting vertices explicitly: "
+                raise MldagException("Graph has no root vertices, specify starting vertices explicitly: "
                                          "GraphIter(pipeline, next_vertices = [...])")
         self.seen.update(self.next_vertices)
 
@@ -475,7 +482,7 @@ class VertexWidthFirst:
             raise StopIteration()
         next_vertex = self.next_vertices[0]
         del self.next_vertices[0]
-        downstream_vertices = set(self.pipeline.get_downstream_vertices(next_vertex)).difference(self.seen)
+        downstream_vertices = set(self.graph.get_downstream_vertices(next_vertex)).difference(self.seen)
         for v in downstream_vertices:
             self.next_vertices.append(v)
         self.seen.update(downstream_vertices)
@@ -548,7 +555,7 @@ class Graph:
 
         Raises
         -------
-        DaskPipesException
+        MldagException
             If edge does not belong to current graph
         """
         return self.remove_edge(self.get_edge(v1, v2))
@@ -568,12 +575,12 @@ class Graph:
 
         Raises
         -------
-        DaskPipesException
+        MldagException
             If v does not belong to current graph
         """
         self.validate_vertex(v)
         if v._id not in self._vertices or v.graph is not self or self._vertices[v._id] is not v:
-            raise DaskPipesException("{} is not in graph".format(v))
+            raise MldagException("{} is not in graph".format(v))
         return [self._edges[i] for i in self._downstream_edges[v._id]]
 
     def get_upstream_edges(self, v: VertexBase) -> List[EdgeBase]:
@@ -591,12 +598,12 @@ class Graph:
 
         Raises
         -------
-        DaskPipesException
+        MldagException
             If v does not belong to current graph
         """
         self.validate_vertex(v)
         if v._id not in self._vertices or v.graph is not self or self._vertices[v._id] is not v:
-            raise DaskPipesException("{} is not in graph".format(v))
+            raise MldagException("{} is not in graph".format(v))
         return [self._edges[i] for i in self._upstream_edges[v._id]]
 
     def add_edge(self, edge: EdgeBase, edge_id=None) -> EdgeBase:
@@ -617,7 +624,7 @@ class Graph:
 
         Raises
         -------
-        DaskPipesException
+        MldagException
             If edge is not subclass of EdgeBase
             If edge already belongs to another graph
             If edge vertices do not belong to same graph as edge
@@ -625,12 +632,12 @@ class Graph:
         self.validate_edge(edge)
         if edge._graph is not None:
             if edge._graph is not self:
-                raise DaskPipesException(
+                raise MldagException(
                     "Tried to add edge ({}) that already belongs to another graph ({})".format(edge, edge._graph))
             else:
                 # Edge already added, do nothing
                 if edge._v1._graph is not self or edge._v2._graph is not self:
-                    raise DaskPipesException(
+                    raise MldagException(
                         "Edge already belongs to graph, but vertices ({}), ({}) do not".format(edge._v1, edge._v2))
                 return edge
         self.add_vertex(edge._v1)
@@ -664,20 +671,20 @@ class Graph:
 
         Raises
         -------
-        DaskPipesException
+        MldagException
             If either v1 or v2 are not subclass of VertexBase
             If either v1 or v2 do not belong to current graph
         """
         self.validate_vertex(v1)
         self.validate_vertex(v2)
         if v1._graph is not self or v2._graph is not self:
-            raise DaskPipesException(
+            raise MldagException(
                 "Tried to get edge between vertices ({}), ({}) "
                 "that do not belong to current graph ({})".format(v1, v2, self))
         rv = [self._edges[i] for i in self._downstream_edges[v1._id]
               if self._edges[i].downstream._id == v2._id]
         if len(rv) == 0:
-            raise DaskPipesException(
+            raise MldagException(
                 "Edge ({}), ({}) does not exist".format(v1, v2))
         return rv
 
@@ -698,7 +705,7 @@ class Graph:
 
         Raises
         -------
-        DaskPipesException
+        MldagException
             If either v1 or v2 are not subclass of VertexBase
             If either v1 or v2 do not belong to current graph
             If edge v1->v2 does not exist
@@ -707,16 +714,16 @@ class Graph:
         self.validate_vertex(v1)
         self.validate_vertex(v2)
         if v1._graph is not self or v2._graph is not self:
-            raise DaskPipesException(
+            raise MldagException(
                 "Tried to get edge between vertices ({}), ({}) "
                 "that do not belong to current graph ({})".format(v1, v2, self))
         connecting_edges = [i for i in self._downstream_edges[v1._id]
                             if self._edges[i].downstream._id == v2._id]
         if len(connecting_edges) == 0:
-            raise DaskPipesException(
+            raise MldagException(
                 "Edge ({}), ({}) does not exist".format(v1, v2)) from None
         elif len(connecting_edges) > 1:
-            raise DaskPipesException(
+            raise MldagException(
                 "There are multiple edges connecting {} {}. use get_edges instead".format(v1, v2)) from None
         return self._edges[connecting_edges[0]]
 
@@ -735,12 +742,12 @@ class Graph:
 
         Raises
         -------
-        DaskPipesException
+        MldagException
             If edge does not belong to current graph
         """
         EdgeBase.validate(edge)
         if edge._graph is not self:
-            raise DaskPipesException(
+            raise MldagException(
                 "Tried to remove edge ({}) that does not belong to current graph ({})".format(edge, self))
         for vertex_id, edge_ids in self._downstream_edges.items():
             self._downstream_edges[vertex_id] = tuple((i for i in edge_ids if i != edge._id))
@@ -772,7 +779,7 @@ class Graph:
 
         Raises
         -------
-        DaskPipesException
+        MldagException
             If vertex already belongs to another graph
             If vertex is not subclass of VertexBase
         ValueError
@@ -781,15 +788,15 @@ class Graph:
 
         self.validate_vertex(vertex)
         if vertex is None:
-            raise DaskPipesException("Expected {}, got None".format(VertexBase.__class__.__name__))
+            raise MldagException("Expected {}, got None".format(VertexBase.__class__.__name__))
         if vertex._graph is not None:
             if vertex._graph is not self:
-                raise DaskPipesException(
+                raise MldagException(
                     "Tried to add vertex ({}) that already belongs to another graph ({})".format(vertex, vertex._graph))
             else:
                 # Vertex already added, do nothing
                 if vertex._id is None or vertex._id not in self._vertices or not self._vertices[vertex._id] is vertex:
-                    raise DaskPipesException("Vertex corrupted")
+                    raise MldagException("Vertex corrupted")
                 return vertex
         vertex._graph = self
         if vertex_id is not None:
@@ -821,7 +828,7 @@ class Graph:
 
         Raises
         -------
-        DaskPipesException
+        MldagException
             If vertex is not subclass of VertexBase
         ValueError
             If vertex is not part of current graph
@@ -856,7 +863,7 @@ class Graph:
         """
         self.validate_vertex(vertex)
         if vertex.graph is not self:
-            raise DaskPipesException(
+            raise MldagException(
                 "Tried to get upstream vertices of vertex ({}) "
                 "that does not belong to current graph ({})".format(vertex, self))
         return [self._edges[edge_i].upstream for edge_i in self._upstream_edges[vertex._id]]
@@ -880,7 +887,7 @@ class Graph:
         """
         self.validate_vertex(vertex)
         if vertex.graph is not self:
-            raise DaskPipesException(
+            raise MldagException(
                 "Tried to get downstream vertices of vertex ({}) "
                 "that does not belong to current graph ({})".format(vertex, self))
         return [self._edges[edge_i].downstream for edge_i in self._downstream_edges[vertex._id]]

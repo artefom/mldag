@@ -3,7 +3,7 @@ from typing import Optional, Tuple
 
 import pytest
 
-import dask_pipes as dp
+import mldag
 
 
 def test_doc1():
@@ -28,17 +28,17 @@ def test_doc1():
         """
         return 1, 'a'
 
-    p = dp.Pipeline()
-    a = dp.as_node(foo)
+    p = mldag.MLDag()
+    a = mldag.as_node(foo)
 
     p['i_X'] >> a['X']
     a['integer'] >> p['out_int']
     a['string'] >> p['out_str']
 
-    p_node = dp.as_node(p, 'pipeline_node')
+    p_node = mldag.as_node(p, 'pipeline_node')
 
     expected_p_fit_doc = textwrap.dedent("""
-    Main method for fitting pipeline.
+    Main method for fitting mldag.
     Sequentially calls fit and transform in width-first order
 
     Parameters
@@ -51,8 +51,8 @@ def test_doc1():
 
     Returns
     ------------------
-    run : PipelineRun
-        computed pipeline run
+    run : MLDagRun
+        computed mldag run
     """).strip()
 
     expected_p_transform_doc = textwrap.dedent("""
@@ -64,12 +64,12 @@ def test_doc1():
         Downstream node - foo
 
     run_id : str, optional
-        pipeline run identifier
+        mldag run identifier
 
     Returns
     ------------------
-    run : PipelineRun
-        computed pipeline run containing all node outputs
+    run : MLDagRun
+        computed mldag run containing all node outputs
     """).strip()
 
     assert p.fit.__doc__ == expected_p_fit_doc
@@ -96,18 +96,18 @@ def test_doc1():
 
 
 def test_doc2():
-    @dp.returns([('A', 'int'), ('B', 'str', 'test description')])
+    @mldag.returns([('A', 'int'), ('B', 'str', 'test description')])
     def foo(X):
         return 1, 'a'
 
-    p = dp.Pipeline()
-    a = dp.as_node(foo, name='a')
+    p = mldag.MLDag()
+    a = mldag.as_node(foo, name='a')
 
     p['i_X'] >> a['X']
     a['A'] >> p['out_a']
     a['B'] >> p['out_b']
 
-    p_node = dp.as_node(p)
+    p_node = mldag.as_node(p)
 
     expected_p_node_transform_doc = textwrap.dedent("""
     Method for transforming based on previously fitted parameters
@@ -130,24 +130,24 @@ def test_doc2():
 
 
 def test_doc3():
-    @dp.returns([('A', 'int'), ('B', 'str', 'test description')])
+    @mldag.returns([('A', 'int'), ('B', 'str', 'test description')])
     def foo(X):
         return 1, 'a'
 
-    p1 = dp.Pipeline()
-    a = dp.as_node(foo, name='a')
+    p1 = mldag.MLDag()
+    a = mldag.as_node(foo, name='a')
     p1['_in_X'] >> a
     a['A'] >> p1['_out_a']
     a['B'] >> p1['_out_b']
 
-    p1_node = dp.as_node(p1, name='p1')
+    p1_node = mldag.as_node(p1, name='p1')
 
-    p2 = dp.Pipeline()
+    p2 = mldag.MLDag()
 
     p2['in_X'] >> p1_node['_in_X']
     p1_node['_out_a'] >> p2['out_a']
     p1_node['_out_b'] >> p2['out_b']
-    p2_node = dp.as_node(p2, name='p2')
+    p2_node = mldag.as_node(p2, name='p2')
 
     expected_p2_node_transform_doc = textwrap.dedent("""
     Method for transforming based on previously fitted parameters
@@ -173,7 +173,7 @@ def test_doc4():
     def foo(X):
         return 1
 
-    a = dp.as_node(foo, name='a')
+    a = mldag.as_node(foo, name='a')
 
     assert a.transform.__doc__ is None
 
@@ -185,7 +185,7 @@ def test_doc4():
         def transform(self, X):
             return 1
 
-    a = dp.as_node(A(), name='a')
+    a = mldag.as_node(A(), name='a')
 
     assert a.fit.__doc__ is None
     assert a.transform.__doc__ is None
@@ -207,7 +207,7 @@ def test_doc5():
             """
             return 1
 
-        @dp.returns(['A', 'B'])
+        @mldag.returns(['A', 'B'])
         def transform(self, X):
             """
             Description
@@ -225,14 +225,14 @@ def test_doc5():
             """
             return 1
 
-    p = dp.Pipeline()
-    a = dp.as_node(A(), name='a')
+    p = mldag.MLDag()
+    a = mldag.as_node(A(), name='a')
 
     p['in'] >> a
     a['A'] >> p['out_a']
     a['B'] >> p['out_b']
 
-    p_node = dp.as_node(p)
+    p_node = mldag.as_node(p)
 
     expected_p_node_transform_doc = textwrap.dedent("""
     Method for transforming based on previously fitted parameters
@@ -273,8 +273,8 @@ def test_doc6():
         """
         return 1
 
-    p = dp.Pipeline()
-    a = dp.as_node(foo, name='a')
+    p = mldag.MLDag()
+    a = mldag.as_node(foo, name='a')
 
     p['in_a'] >> a['a']
 
@@ -289,7 +289,7 @@ def test_doc6():
 
     a['some_result'] >> p['out']
 
-    p_node = dp.as_node(p)
+    p_node = mldag.as_node(p)
 
     expected_p_node_transform_doc = textwrap.dedent("""
     Method for transforming based on previously fitted parameters
@@ -324,13 +324,13 @@ def test_doc6():
 
 
 def test_neg_1():
-    @dp.returns([('A', 'int'), ('B', 'str', 'test description')])
+    @mldag.returns([('A', 'int'), ('B', 'str', 'test description')])
     def foo(X):
         return 1, 'a'
 
-    p1 = dp.Pipeline()
+    p1 = mldag.MLDag()
 
-    a = dp.as_node(foo, name='a')
+    a = mldag.as_node(foo, name='a')
     p1['_in_X'] >> a
 
     with pytest.raises(ValueError):
@@ -338,27 +338,27 @@ def test_neg_1():
 
 
 def test_neg_2():
-    @dp.returns([('A', 'int'), ('B', 'str', 'test description')])
+    @mldag.returns([('A', 'int'), ('B', 'str', 'test description')])
     def foo(X):
         return 1, 'a'
 
-    p1 = dp.Pipeline()
+    p1 = mldag.MLDag()
 
-    a = dp.as_node(foo, name='a')
+    a = mldag.as_node(foo, name='a')
     p1['_in_X'] >> a
 
-    with pytest.raises(dp.exceptions.DaskPipesException):
+    with pytest.raises(mldag.exceptions.MldagException):
         a['result'] >> p1['result']
 
 
 def test_neg_3():
-    @dp.returns([('A', 'int'), ('B', 'str', 'test description')])
+    @mldag.returns([('A', 'int'), ('B', 'str', 'test description')])
     def foo(X):
         return 1, 'a'
 
-    p1 = dp.Pipeline()
+    p1 = mldag.MLDag()
 
-    a = dp.as_node(foo, name='a')
+    a = mldag.as_node(foo, name='a')
     p1['_in_X'] >> a
 
     with pytest.raises(ValueError):

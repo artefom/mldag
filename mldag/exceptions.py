@@ -1,3 +1,3 @@
 # TODO: Expand exception collection
-class DaskPipesException(Exception):
+class MldagException(Exception):
     pass

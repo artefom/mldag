@@ -1,14 +1,14 @@
 import inspect
+import pickle
 from collections import defaultdict
 from types import MethodType
 from typing import List, Optional, Tuple, Any, Dict, TYPE_CHECKING, Union
 
 import numpydoc.docscrape
-from sklearn.base import BaseEstimator, TransformerMixin
 
-from dask_pipes.core._pipeline_utils import (
-    PipelineInput,
-    PipelineOutput,
+from mldag.core._connectable_utils import (
+    MLDagInput,
+    MLDagOutput,
     get_input_signature,
     set_fit_signature,
     set_transform_signature,
@@ -19,16 +19,16 @@ from dask_pipes.core._pipeline_utils import (
     ARGS_PARAM_NAME,
     KWARGS_PARAM_NAME,
 )
-from dask_pipes.core.graph import Graph, VertexBase, EdgeBase
-from dask_pipes.exceptions import DaskPipesException
-from dask_pipes.utils import (
+from mldag.core.graph import Graph, VertexBase, EdgeBase
+from mldag.exceptions import MldagException
+from mldag.utils import (
     get_arguments_description,
     get_return_description,
     ReturnParameter,
     InputParameter,
     assert_subclass,
 )
-from dask_pipes.utils import (
+from mldag.utils import (
     replace_signature,
     to_snake_case,
     INSPECT_EMPTY_PARAMETER,
@@ -40,14 +40,14 @@ if TYPE_CHECKING:
     pass
 
 __all__ = [
-    'PipelineMeta',
-    'PipelineBase',
+    'MLDagMeta',
+    'MLDagBase',
     'NodeBaseMeta',
     'NodeBase',
     'NodeSlot',
     'NodeConnection',
     'getcallargs_inverse',
-    'PipelineMixin',
+    'MLDagMixin',
     'NodeCallable',
     'as_node',
     'as_transform',
@@ -56,7 +56,7 @@ __all__ = [
 
 def validate_estimator(obj):
     """
-    Raises DaskPipesException if obj does not have 'fit' and 'transform' methods
+    Raises MldagException if obj does not have 'fit' and 'transform' methods
 
     Parameters
     ----------
@@ -64,7 +64,11 @@ def validate_estimator(obj):
         class to validate
     """
     if not hasattr(obj, 'transform'):
-        raise DaskPipesException("{} must implement transform".format(obj))
+        raise MldagException("{} must implement transform".format(obj))
+    if isinstance(obj, MLDagBase):
+        if obj.mixins:
+            raise MldagException("MLDagBase used as node cannot have mixins. "
+                                 "Only mixins in top-level mldag allowed")
 
 
 def is_estimator(obj):
@@ -93,13 +97,13 @@ class NodeSlot:
 
         Parameters
         ----------
-        node : NodeBase, PipelineBase
+        node : NodeBase, MLDagBase
             Node to pipe into (or from)
         slot : str
             Slot to pipe into (or from)
         """
         if not hasattr(node, 'set_downstream') or not hasattr(node, 'set_upstream'):
-            raise DaskPipesException("node {} must implement set_downstream, set_upstream".format(node))
+            raise MldagException("node {} must implement set_downstream, set_upstream".format(node))
 
         if not isinstance(slot, str) or len(slot) == 0:
             raise ValueError("Only non-empty string slots are allowed")
@@ -113,9 +117,9 @@ class NodeSlot:
 
         Parameters
         ----------
-        other : one of NodeSlot, NodeBase, function or estimator
+        other : one of MLDagBase, NodeSlot, NodeBase, function or estimator
             If function or estimator is passed, as_node(other) is called
-            Piping to instance of PipelineBase is not supported
+            Piping to instance of MLDagBase is not supported
         Returns
         -------
         other
@@ -124,9 +128,9 @@ class NodeSlot:
             # Seems like we're piping output of current node slot to another node slot
             if isinstance(other.node, NodeBase):
                 self.node.set_downstream(other.node, upstream_slot=self.slot, downstream_slot=other.slot)
-            elif isinstance(other.node, PipelineBase):
+            elif isinstance(other.node, MLDagBase):
                 other.node.set_output(other.slot, self.node, upstream_slot=self.slot)
-                return None
+                return None  # Return none because this right shift cannot be piped anywhere else
             else:
                 raise NotImplementedError("Unknown node class {}".format(other.node.__class__.__name__))
 
@@ -135,9 +139,10 @@ class NodeSlot:
             # Seems like we're piping output of current node slot to another node
             self.node.set_downstream(other, upstream_slot=self.slot)
             return other
-        elif isinstance(other, PipelineBase):
-            # Seems like we're piping output of current node slot to pipeline
-            raise NotImplementedError()
+        elif isinstance(other, MLDagBase):
+            # Seems like we're piping output of current node slot to mldag
+            other.set_output(self.slot, self.node, upstream_slot=self.slot)
+            return None  # Return none because this right shift cannot be piped anywhere else
         else:
             # Seems like we're piping output of current node slot to something callable or estimator
             other_wrapped = as_node(other)
@@ -152,7 +157,7 @@ class NodeSlot:
         ----------
         other : one of NodeSlot, NodeBase, function or estimator
             If function or estimator is passed, as_node(other) is called
-            Piping to instance of PipelineBase is not supported
+            Piping to instance of MLDagBase is not supported
         Returns
         -------
         other
@@ -160,14 +165,14 @@ class NodeSlot:
         Raises
         --------
         ValueError
-            if other.node is PipelineBase
+            if other.node is MLDagBase
         """
         if isinstance(other, NodeSlot):
             # Seems like we're piping output of some node slot to current node slot
             if isinstance(other.node, NodeBase):
                 self.node.set_upstream(other.node, upstream_slot=other.slot, downstream_slot=self.slot)
-            elif isinstance(other.node, PipelineBase):
-                raise ValueError("Piping from Pipeline to NodeSlot not supported")
+            elif isinstance(other.node, MLDagBase):
+                raise ValueError("Piping from MLDagBase to NodeSlot not supported")
             else:
                 raise NotImplementedError("Unknown node class {}".format(other.node.__class__.__name__))
 
@@ -176,8 +181,8 @@ class NodeSlot:
             # Seems like we're piping output of some node to current node slot
             self.node.set_upstream(other, downstream_slot=self.slot)
             return other
-        elif isinstance(other, PipelineBase):
-            # Seems like we're piping output of pipeline to current node slot
+        elif isinstance(other, MLDagBase):
+            # Seems like we're piping output of mldag to current node slot
             raise NotImplementedError()
         else:
             # Seems like we're piping output of some callable to current node slot
@@ -194,19 +199,19 @@ class NodeConnection(EdgeBase):
     def __init__(self, upstream, downstream, upstream_slot: str, downstream_slot: str):
         super().__init__(upstream, downstream)
         if not isinstance(upstream_slot, str):
-            raise DaskPipesException("upstream slot must be str, got {}".format(upstream_slot.__class__.__name__))
+            raise MldagException("upstream slot must be str, got {}".format(upstream_slot.__class__.__name__))
         if not isinstance(upstream_slot, str):
-            raise DaskPipesException("downstream slot must be str, got {}".format(downstream_slot.__class__.__name__))
+            raise MldagException("downstream slot must be str, got {}".format(downstream_slot.__class__.__name__))
 
         if downstream_slot not in {i.name for i in downstream.inputs}:
-            raise DaskPipesException("Invalid value for downstream_slot: {} does not have '{}' input. "
-                                     "Please, provide one of {}".format(downstream, downstream_slot,
-                                                                        [i.name for i in downstream.inputs]))
+            raise MldagException("Invalid value for downstream_slot: {} does not have '{}' input. "
+                                 "Please, provide one of {}".format(downstream, downstream_slot,
+                                                                    [i.name for i in downstream.inputs]))
 
         if upstream_slot not in {i.name for i in upstream.outputs}:
-            raise DaskPipesException("Invalid value for upstream_slot: {} does not have '{}' output. "
-                                     "Please, provide one of {}".format(upstream, upstream_slot,
-                                                                        [i.name for i in upstream.outputs]))
+            raise MldagException("Invalid value for upstream_slot: {} does not have '{}' output. "
+                                 "Please, provide one of {}".format(upstream, upstream_slot,
+                                                                    [i.name for i in upstream.outputs]))
 
         self.upstream_slot = upstream_slot
         self.downstream_slot = downstream_slot
@@ -265,7 +270,7 @@ class NodeBaseMeta(type):
         return super().__new__(mcs, name, bases, attrs)
 
 
-class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMeta):
+class NodeBase(VertexBase, metaclass=NodeBaseMeta):
     """
     Node baseclass, derive from it and overload fit and transform methods
     """
@@ -287,7 +292,7 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         super().__init__()
 
         self.name = name  # Name used as node unique identifier inside graph
-        self._meta = defaultdict(dict)  # Used to store metadata by pipeline mixins
+        self._meta = defaultdict(dict)  # Used to store metadata by mldag mixins
 
         # Notice: Dependencies are not regular edges
         # Node can depend on any other object
@@ -310,7 +315,7 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         if self.dependencies is None:
             self.dependencies = dict()
         if not isinstance(node, NodeBase):
-            raise DaskPipesException("Only {} can be dependencies. {} is instance of {}".format(
+            raise MldagException("Only {} can be dependencies. {} is instance of {}".format(
                 NodeBase.__class__.__name__, node, node.__class__.__name__))
         self.dependencies[name] = node
 
@@ -346,13 +351,13 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
                 if dep.graph == self.graph:
                     yield dep_name, dep
                 else:
-                    raise DaskPipesException("Dependency {} of {} does not belong to same graph ({})".format(
+                    raise MldagException("Dependency {} of {} does not belong to same graph ({})".format(
                         dep, self, self.graph))
 
     def get_default_name(self):
         """
         Get user-friendly name of current node if user does not bother specifying names themselves
-        Used when adding node to pipeline and self.name is None, since each node assigned to pipeline must have name
+        Used when adding node to mldag and self.name is None, since each node assigned to mldag must have name
         """
         return to_snake_case(self.__class__.__name__)
 
@@ -363,7 +368,7 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         available_slots = sorted({i.name for i in self.inputs}.union({i.name for i in self.outputs}))
 
         if slot not in available_slots:
-            raise DaskPipesException(
+            raise MldagException(
                 "{} Does not have input or output slot {}. Use one of {}".format(
                     self, slot, available_slots))
         return NodeSlot(self, slot)
@@ -374,22 +379,22 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
 
         Parameters
         -------------------
-        other : NodeSlot, NodeBase, Estimator, function
+        other : MLDagBase, NodeSlot, NodeBase, Estimator, function
             if other is not NodeSlot, NodeBase or Estimator as_node(other) is called.
             can be one of NodeSlot, NodeBase, else as_node(other) is called.
-            piping to instance of PipelineBase is not supported. Use PipelineNode instead
+            piping to instance of MLDagBase is not supported. Use MLDagNode instead
 
         See also
         -------------------
             NodeSlot.__rshift__
-            PipelineBase.__lshift__
+            MLDagBase.__lshift__
 
         """
         if isinstance(other, NodeSlot):
             # Seems like we're piping output of current node to another node slot
             if isinstance(other.node, NodeBase):
                 self.set_downstream(other.node, downstream_slot=other.slot)
-            elif isinstance(other.node, PipelineBase):
+            elif isinstance(other.node, MLDagBase):
                 other.node.set_output(other.slot, self)
                 return None
             else:
@@ -399,9 +404,11 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
             # Seems like we're piping output of current node to another node
             self.set_downstream(other)
             return other
-        elif isinstance(other, PipelineBase):
-            # Seems like we're piping output of current node to some pipeline
-            raise NotImplementedError()
+        elif isinstance(other, MLDagBase):
+            # Seems like we're piping output of current node to some mldag
+            for output_param in self.outputs:
+                other.set_output(output_param.name, self, upstream_slot=output_param.name)
+            return None
         else:
             # Seems like we may be piping come unknown class instance, function or anything else
             other_wrapped = as_node(other)
@@ -423,7 +430,7 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         See Also
         -------
         NodeSlot.__lshift__
-        PipelineBase.__lshift__
+        MLDagBase.__lshift__
         """
         if isinstance(other, NodeSlot):
             # Seems like we're piping output of some node slot to current node
@@ -433,8 +440,8 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
             # Seems like we're piping output of some node to current node
             self.set_upstream(other)
             return other
-        elif isinstance(other, PipelineBase):
-            # Seems like we're piping output of some pipeline to current node
+        elif isinstance(other, MLDagBase):
+            # Seems like we're piping output of some mldag to current node
             raise NotImplementedError()
         else:
             raise NotImplementedError()
@@ -486,7 +493,7 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
 
         Raises
         -------
-        DaskPipesException
+        MldagException
 
         """
         assert_subclass(node, NodeBase)
@@ -500,7 +507,7 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         """
         Make other Node upstream of current
         Pipes output of specific slot of upstream node to specific slot of current node
-        Automatically assigns other or self to pipeline of one of them is not assigned
+        Automatically assigns other or self to mldag of one of them is not assigned
 
         Parameters
         ----------
@@ -515,15 +522,15 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         Examples
         -------
 
-        >>> # Construct pipeline and nodes
-        ... p = PipelineBase()
+        >>> # Construct mldag and nodes
+        ... p = MLDagBase()
         ... op1 = DummyNode('op1')
         ... op2 = DummyNode('op2')
         ...
-        ... # Assign input for op1 as pipeline input and add it to pipeline
+        ... # Assign input for op1 as mldag input and add it to mldag
         ... p.set_input(op1)
         ...
-        ... # Set upstream node, add op2 to pipeline
+        ... # Set upstream node, add op2 to mldag
         ... # input ->> op1 ->> op2
         ... op2.set_upstream(op1)
 
@@ -554,21 +561,21 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         """
         Make other Node upstream of current
         Pipes output of specific slot of upstream node to specific slot of current node
-        Automatically assignes other or self to pipeline of one of them is not assigned
+        Automatically assignes other or self to mldag of one of them is not assigned
 
         ...
 
         Examples
         ----------------------
-        >>> # Construct pipeline and nodes
-        ... p = PipelineBase()
+        >>> # Construct mldag and nodes
+        ... p = MLDagBase()
         ... op1 = DummyNode('op1')
         ... op2 = DummyNode('op2')
         ...
-        ... # Assign input for op1 as pipeline input and add it to pipeline
+        ... # Assign input for op1 as mldag input and add it to mldag
         ... p.set_input(op1)
         ...
-        ... # Set downstream node, add op2 to pipeline
+        ... # Set downstream node, add op2 to mldag
         ... # input ->> op1 ->> op2
         ... op1.set_downstream(op2)
 
@@ -590,15 +597,15 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
     def fit(self, *args, **kwargs):
         """
         Infer parameters prior to transforming dataset
-        To be implemented by subclass pipelines
+        To be implemented by subclass mldags
 
         .. note:
             Signature of this function is changed dynamically.
-            As user sets pipeline input nodes, they are added to parameters of fit
+            As user sets mldag input nodes, they are added to parameters of fit
 
         .. warning:
             Reason behind returning dict instead of storing fitted data inside node:
-            1. One node can be fitted multiple time in one pipeline
+            1. One node can be fitted multiple time in one mldag
             2. Do not use pickle to save model parameters. instead, serialize them explicitly to yaml or csv files
 
         Parameters
@@ -617,13 +624,13 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         --------------------------
         >>> import pandas as pd
         ... ds = pd.DataFrame([[1,2,3]])
-        ... p = PipelineBase()
+        ... p = MLDagBase()
         ... op1 = DummyNode('op1')
         ... op2 = DummyNode('op2')
         ... p.set_input(op1)
         ... op1.set_downstream(op2)
         ... print(p.inputs) # ['dataset']
-        ... # since pipeline has single input, it's allowed to pass ds as positional
+        ... # since mldag has single input, it's allowed to pass ds as positional
         ... p.fit(ds)
         ... # but it can be also passed as key-word (consult p.inputs)
         ... p.fit(datset=ds)
@@ -633,17 +640,17 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
 
     def transform(self, *args, **kwargs):
         """
-        To be implemented by subclass pipelines
+        To be implemented by subclass mldags
 
         Signature of this function is changed dynamically.
-        As user sets pipeline input nodes, they are added to parameters of transform
+        As user sets mldag input nodes, they are added to parameters of transform
 
         Examples
         ----------------------------
 
         >>> import pandas as pd
         ... ds = pd.DataFrame([[1,2,3]])
-        ... p = PipelineBase()
+        ... p = MLDagBase()
         ... op1 = DummyNode('op1')
         ... op2 = DummyNode('op2')
         ... p.set_input(op1)
@@ -651,24 +658,24 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         ... op1.fit(ds)
         ...
         ... print(p.outputs) # ['op3_result'] 'result' is because transform has not defined result annotations
-        ... # since pipeline has single input, it's allowed to pass ds as positional
-        ... p.transform(ds) # since output of pipeline is single dataset, returns ds.
+        ... # since mldag has single input, it's allowed to pass ds as positional
+        ... p.transform(ds) # since output of mldag is single dataset, returns ds.
         ... # If multiple datasets are returned, returns dictionary {dataset_name: dataset} (see p.outputs)
         ... # but it can be also passed as key-word (consult p.inputs)
-        ... p.transform(datset=ds) # since output of pipeline is single dataset, returns ds
+        ... p.transform(datset=ds) # since output of mldag is single dataset, returns ds
 
         Parameters
         ------------------------
 
         args
-            placeholder for pipeline inputs.
-            Positional arguments are allowed only if pipeline has single input.
+            placeholder for mldag inputs.
+            Positional arguments are allowed only if mldag has single input.
             Positional arguments are not allowed to be mixed with key-word arguments
             This is for safety purposes, because order of inputs can be changed dynamically during runtime
 
         kwargs
-            placeholder for pipeline inputs.
-            Key-word inputs to pipeline
+            placeholder for mldag inputs.
+            Key-word inputs to mldag
             name of argument is equal to input nodes' input slots + optional suffix
             single key-word argument can be piped to multiple nodes
 
@@ -734,10 +741,33 @@ class NodeBase(VertexBase, BaseEstimator, TransformerMixin, metaclass=NodeBaseMe
         self.transform = MethodType(self.__class__.transform, self)
         self.transform.__doc__ = self.__class__.transform.__doc__
 
+    def load(self, f):
+        """
+        Parameters
+        ----------
+        f : stream to load from
+
+        Returns
+        -------
+        """
+        raise NotImplementedError()
+
+    def dump(self, f):
+        """
+        Parameters
+        ----------
+        f : stream to save parameters to
+
+        Returns
+        -------
+
+        """
+        raise NotImplementedError()
+
 
 class FunctionNode(NodeBase):
     """
-    Wraps custom function for use in pipeline
+    Wraps custom function for use in mldag
     Assumes embedded function is stateless and uses it as a transform method
     """
 
@@ -749,13 +779,13 @@ class FunctionNode(NodeBase):
     def get_default_name(self):
         try:
             return self.func.__name__
-        except DaskPipesException:
+        except MldagException:
             return to_snake_case(self.__class__.__name__)
 
     @property
     def func(self):
         if not self._func:
-            raise DaskPipesException("{} does not have assigned function".format(self))
+            raise MldagException("{} does not have assigned function".format(self))
         return self._func
 
     @func.setter
@@ -809,10 +839,24 @@ class FunctionNode(NodeBase):
     def transform(self, *args, **kwargs):
         return self.func(*args, **kwargs)
 
+    def load(self, f):
+        """
+        Does nothing
+        No need to save or load FunctionNode as it does not have any parameters
+        """
+        pass
+
+    def dump(self, f):
+        """
+        Does nothing
+        No need to save or load FunctionNode as it does not have any parameters
+        """
+        pass
+
 
 class EstimatorNode(NodeBase):
     """
-    Wraps BaseEstimator for use in pipeline
+    Wraps BaseEstimator for use in mldag
     Supports fit and transform methods
     """
 
@@ -824,13 +868,13 @@ class EstimatorNode(NodeBase):
     def get_default_name(self):
         try:
             return to_snake_case(self.estimator.__class__.__name__)
-        except DaskPipesException:
+        except MldagException:
             return to_snake_case(self.__class__.__name__)
 
     @property
     def estimator(self):
         if not self._estimator:
-            raise DaskPipesException("{} does not have assigned estimator".format(self))
+            raise MldagException("{} does not have assigned estimator".format(self))
         return self._estimator
 
     @estimator.setter
@@ -839,8 +883,8 @@ class EstimatorNode(NodeBase):
 
             try:
                 validate_estimator(estimator)
-            except DaskPipesException as ex:
-                raise DaskPipesException("Cannot wrap {}, reason: {}".format(estimator, str(ex)))
+            except MldagException as ex:
+                raise MldagException("Cannot wrap {}, reason: {}".format(estimator, str(ex)))
 
             output_parameters = get_return_description(estimator.transform)
 
@@ -907,36 +951,61 @@ class EstimatorNode(NodeBase):
         """
         return self.estimator.transform(*args, **kwargs)
 
+    def load(self, f):
+        """
+        Load estimator from stream
+        Parameters
+        ----------
+        f : BytesIO
 
-class PipelineNode(NodeBase):
+        Returns
+        -------
 
-    def __init__(self, name=None, pipeline=None):
+        """
+        self.estimator = pickle.load(f)
+
+    def dump(self, f):
+        """
+        Dump estimator to stream
+        Parameters
+        ----------
+        f : BytesIO
+
+        Returns
+        -------
+        """
+        pickle.dump(self.estimator, f)
+
+
+class MLDagNode(NodeBase):
+
+    def __init__(self, name=None, mldag=None):
         super().__init__(name)
-        self._pipeline = None
-        self.pipeline = pipeline
+        self._mldag = None
+        self.mldag = mldag
 
     @property
-    def pipeline(self):
-        return self._pipeline
+    def mldag(self):
+        return self._mldag
 
-    @pipeline.setter
-    def pipeline(self, pipeline):
-        if pipeline is not None:
+    @mldag.setter
+    def mldag(self, mldag):
+        if mldag is not None:
             try:
-                validate_estimator(pipeline)
-            except DaskPipesException as ex:
-                raise DaskPipesException("Cannot wrap {}, reason: {}".format(pipeline, str(ex)))
+                validate_estimator(mldag)
+            except MldagException as ex:
+                raise MldagException("Cannot wrap {}, reason: {}".format(mldag, str(ex)))
 
             try:
-                self_parameter = [next(iter(inspect.signature(pipeline.fit.__func__).parameters.values()))]
+                self_parameter = [next(iter(inspect.signature(mldag.fit.__func__).parameters.values()))]
             except StopIteration:
                 self_parameter = list()
 
-            pipeline_input_parameters = {i.name for i in pipeline.inputs}
+            mldag_input_parameters = {i.name for i in mldag.inputs}
 
             unique_additional_parameters: List[InputParameter] = [
-                i for i in get_arguments_description(pipeline.transform)
-                if i.name in pipeline_input_parameters]
+                i for i in get_arguments_description(mldag.transform)
+                if i.name in mldag_input_parameters]
             unique_additional_parameters_inspect = [
                 inspect.Parameter(i.name, i.kind, default=i.default, annotation=i.type)
                 for i in unique_additional_parameters
@@ -944,10 +1013,10 @@ class PipelineNode(NodeBase):
 
             fit_sign = inspect.Signature(
                 parameters=self_parameter + unique_additional_parameters_inspect,
-                return_annotation=pipeline.__class__
+                return_annotation=mldag.__class__
             )
 
-            fit_doc = pipeline.fit.__doc__
+            fit_doc = mldag.fit.__doc__
             if fit_doc is None:
                 fit_doc = ""
 
@@ -975,7 +1044,7 @@ class PipelineNode(NodeBase):
                 return_annotation=Tuple
             )
 
-            transform_doc = pipeline.transform.__doc__
+            transform_doc = mldag.transform.__doc__
             if transform_doc is None:
                 transform_doc = ""
 
@@ -988,7 +1057,7 @@ class PipelineNode(NodeBase):
 
             transform_doc['Returns'] = [
                 numpydoc.docscrape.Parameter(i.name, i.type, i.desc)
-                for i in pipeline.outputs
+                for i in mldag.outputs
             ]
 
             transform_doc = docstring_to_str(transform_doc)
@@ -997,51 +1066,90 @@ class PipelineNode(NodeBase):
                                           doc=transform_doc)
 
             # Set transform output parameters
-            pipeline_return = [(i.name, i.type, i.desc) for i in pipeline.outputs]
-            set_function_return(self.transform, pipeline_return)
+            mldag_return = [(i.name, i.type, i.desc) for i in mldag.outputs]
+            set_function_return(self.transform, mldag_return)
 
         else:
             # noinspection PyTypeChecker
             self.__doc__ = self.__class__.__doc__
             self._reset_transform_signature()
             self._reset_fit_signature()
-        self._pipeline = pipeline
+        self._mldag = mldag
 
     def __repr__(self):
-        if self._pipeline is None:
+        if self._mldag is None:
             return '<{}: {}>'.format(self.__class__.__name__, self.name)
-        return '<{}({}): {}>'.format(self.__class__.__name__, self.pipeline, self.name)
+        return '<{}({}): {}>'.format(self.__class__.__name__, self.mldag, self.name)
 
     def fit(self, *args, **kwargs):
-        self.pipeline.fit(*args, **kwargs)
+        self.mldag.fit(*args, **kwargs)
         return self
 
     def transform(self, *args, **kwargs):
-        res = self.pipeline.transform(*args, **kwargs)
-        return tuple((res.outputs[output.name] for output in self.pipeline.outputs))
+        res = self.mldag.transform(*args, **kwargs)
+        return tuple((res.outputs[output.name] for output in self.mldag.outputs))
+
+    def dump(self, f):
+        """
+        Dump mldag to stream
+        Parameters
+        ----------
+        f : BytesIO
+
+        Returns
+        -------
+        """
+        # Make sure mldag does not have any external references
+        assert not self.mldag.mixins
+
+        pickle.dump(self.mldag, f)
+
+    def load(self, f):
+        """
+        Load mldag from stream
+        Parameters
+        ----------
+        f : BytesIO
+
+        Returns
+        -------
+        """
+        self.mldag = pickle.load(f)
 
 
 class TransformNode(NodeBase):
     """
-    Wraps node so it can be applied as transform in different part of pipeline
+    Wraps node so it can be applied as transform in different part of mldag
     """
 
-    def __init__(self, name=None, node=None):
+    def __init__(self, name=None, parent_node_name=None):
         super().__init__(name=name)
-        self._node: Optional[NodeBase] = None
-        self.node = node
 
-    @property
-    def node(self) -> Optional[NodeBase]:
-        return self._node
+        # Use parent node name instead of direct reference to make node safe-load friendly
+        self.parent_node_name = parent_node_name
 
-    @node.setter
-    def node(self, node):
-        if node is not None:
+    def _get_node_by_name(self, node_name):
+        for graph_node in self.graph.vertices:
+            assert isinstance(graph_node, NodeBase)
+            if graph_node.name == node_name:
+                return graph_node
+        raise MldagException("Could not find node {}".format(node_name))
+
+    def _update_signature(self):
+        """
+        Update signature when node is added to graph and node 'parent_node_name' is known
+        Extract signature from it and apply to current node
+        Returns
+        -------
+
+        """
+        if self.parent_node_name is not None:
+            # Get real node, we'll extract
+            node = self._get_node_by_name(self.parent_node_name)
             try:
                 validate_estimator(node)
-            except DaskPipesException as ex:
-                raise DaskPipesException("Cannot wrap {}, reason: {}".format(node, str(ex)))
+            except MldagException as ex:
+                raise MldagException("Cannot wrap {}, reason: {}".format(node, str(ex)))
 
             fit_sign = inspect.signature(node.fit.__func__)
             fit_sign = inspect.Signature(
@@ -1051,28 +1159,41 @@ class TransformNode(NodeBase):
             self._set_fit_signature(fit_sign, doc=node.fit.__doc__)
             self._set_transform_signature(inspect.signature(node.transform.__func__),
                                           doc=node.transform.__doc__)
+
+            # Dependencies are used to resolve calculation order
+            # Transformer's dependency must be calculated beforehand
             self.add_dependency("transformer", node)
         else:
             # noinspection PyTypeChecker
             self.remove_dependency("transformer")
             self._reset_transform_signature()
             self._reset_fit_signature()
-        self._node = node
+
+    def callback_graph_after_add(self):
+        # Update signature after node was added to mldag
+        self._update_signature()
 
     def fit(self, *args, **kwargs):
         # Do not fit when transforming
         pass
 
     def transform(self, *args, **kwargs):
-        return self.node.transform(*args, **kwargs)
+        node = self._get_node_by_name(self.parent_node_name)
+        return node.transform(*args, **kwargs)
+
+    def dump(self, f):
+        pickle.dump(self.parent_node_name, f)
+
+    def load(self, f):
+        self.parent_node_name = pickle.load(f)
 
 
-def as_node(obj: Any, name=None) -> Union[Union[FunctionNode, EstimatorNode], PipelineNode]:
+def as_node(obj: Any, name=None) -> Union[Union[FunctionNode, EstimatorNode], MLDagNode]:
     """
-    Wrap callable or class instance with 'fit' and 'transform' methods to node, so it can be used in pipeline
-    To add node to pipeline, see PipelineBase.set_input
+    Wrap callable or class instance with 'fit' and 'transform' methods to node, so it can be used in mldag
+    To add node to mldag, see MLDagBase.set_input
 
-    this function is called whenever non-node is piped to pipeline with byte-shift operators
+    this function is called whenever non-node is piped to mldag with byte-shift operators
 
     Parameters
     -------------------
@@ -1080,18 +1201,18 @@ def as_node(obj: Any, name=None) -> Union[Union[FunctionNode, EstimatorNode], Pi
         Object to wrap
 
     name : str
-        Name of node to be used in pipeline
+        Name of node to be used in mldag
 
     Returns
     -------------------
-    node : EstimatorNode, FunctionNode or PipelineNode
-        object wrapped as node to be used in pipeline
+    node : EstimatorNode, FunctionNode or MLDagNode
+        object wrapped as node to be used in mldag
 
     Examples
     -------------------
 
     Automatic as_node execution
-    >>> p = PipelineBase()
+    >>> p = MLDagBase()
     ... def foo(X): ...
     ... p >> foo  # as_node is called
 
@@ -1099,8 +1220,8 @@ def as_node(obj: Any, name=None) -> Union[Union[FunctionNode, EstimatorNode], Pi
     """
     if callable(obj):
         return FunctionNode(name=name, func=obj)
-    elif isinstance(obj, PipelineBase):
-        return PipelineNode(name=name, pipeline=obj)
+    elif isinstance(obj, MLDagBase):
+        return MLDagNode(name=name, mldag=obj)
     else:
         return EstimatorNode(name=name, estimator=obj)
 
@@ -1116,17 +1237,17 @@ def as_transform(obj: Any, name=None) -> TransformNode:
         Object to wrap
 
     name : str
-        Name of node to be used in pipeline
+        Name of node to be used in mldag
 
     Returns
     -------------------
-    node : EstimatorNode, FunctionNode or PipelineNode
-        object wrapped as node to be used in pipeline
+    node : EstimatorNode, FunctionNode or MLDagNode
+        object wrapped as node to be used in mldag
 
     """
 
     if not isinstance(obj, NodeBase):
-        raise DaskPipesException("Can only use Nodes as transform-only")
+        raise MldagException("Can only use Nodes as transform-only")
     return TransformNode(name=name, node=obj)
 
 
@@ -1145,14 +1266,14 @@ class DummyNode(NodeBase):
         return X
 
 
-class PipelineMeta(type):
+class MLDagMeta(type):
     """
     Obsolete, deprecated, outdated, to be removed, discontinued
     """
 
     def __new__(mcs, name, bases, attrs):
         """
-        Run validations on pipeline's fit and transform signatures
+        Run validations on mldag's fit and transform signatures
         """
         validate_fit_transform(name, attrs, obligatory_variadic=True, allow_default=False)
         return super().__new__(mcs, name, bases, attrs)
@@ -1160,13 +1281,13 @@ class PipelineMeta(type):
 
 class NodeCallable:
     """
-    Mock of callable func passed inside pipeline and wrapped
+    Mock of callable func passed inside mldag and wrapped
     """
 
     def __call__(self, run, node: NodeBase, node_input: Tuple[Tuple[Any], Dict[str, Any]]) -> Any: ...
 
 
-class PipelineMixin:
+class MLDagMixin:
 
     def __init__(self):
         pass
@@ -1205,23 +1326,23 @@ class PipelineMixin:
         pass
 
 
-class PipelineBase(Graph, metaclass=PipelineMeta):
+class MLDagBase(Graph, metaclass=MLDagMeta):
 
-    def __init__(self, mixins: Optional[List[PipelineMixin]] = None):
+    def __init__(self, mixins: Optional[List[MLDagMixin]] = None):
         super().__init__()
 
-        # Pipeline inputs. use set_input to add input
-        self.inputs: List[PipelineInput] = list()
-        self.outputs: List[PipelineOutput] = list()
+        # MLDagBase inputs. use set_input to add input
+        self.inputs: List[MLDagInput] = list()
+        self.outputs: List[MLDagOutput] = list()
 
         self.node_dict = dict()
 
         self._param_downstream_mapping: Optional[Dict[str, List[Tuple[Any, str]]]] = None
 
         if mixins is None:
-            self.mixins: List[PipelineMixin] = list()
+            self.mixins: List[MLDagMixin] = list()
         else:
-            self.mixins: List[PipelineMixin] = mixins
+            self.mixins: List[MLDagMixin] = mixins
 
     @property
     def vertices(self) -> List[NodeBase]:
@@ -1271,18 +1392,18 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
         """
         if isinstance(other, NodeSlot):
-            # Seems like we're trying to pipe input of current pipeline to some node slot
+            # Seems like we're trying to pipe input of current mldag to some node slot
             self.set_input(other.node, name=other.slot, downstream_slot=other.slot)
             return other.node
         elif isinstance(other, NodeBase):
-            # Seems like we're trying to pipe input of current pipeline to some node
+            # Seems like we're trying to pipe input of current mldag to some node
             self.set_input(other)
             return other
-        elif isinstance(other, PipelineBase):
-            # Seems like we're trying to pipe input of current pipeline to another pipeline
+        elif isinstance(other, MLDagBase):
+            # Seems like we're trying to pipe input of current mldag to another mldag
             raise NotImplementedError()
         else:
-            # Seems like we're trying to pipe input of current pipeline to some callable or estimator
+            # Seems like we're trying to pipe input of current mldag to some callable or estimator
             other_wrapped = as_node(other)
             self.set_input(other_wrapped)
             return other_wrapped
@@ -1291,7 +1412,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         """
         self << other
 
-        piping to instance of PipelineBase is not supported.
+        piping to instance of MLDagBase is not supported.
 
         Parameters
         -------------
@@ -1305,29 +1426,29 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
     def __getitem__(self, slot_name: str):
         """
-        Pipeline['slot']
+        MLDagBase['slot']
 
         Parameters
         ----------
         slot_name : str
-            name of pipeline slot to get
+            name of mldag slot to get
 
         Returns
         -------
         slot : NodeSlot
-            pipeline slot
+            mldag slot
 
         """
         original_signature = list(inspect.signature(self.__class__.transform).parameters.values())
         reserved_names = {param.name: param for param in original_signature}
         if slot_name in reserved_names and slot_name != ARGS_PARAM_NAME and slot_name != KWARGS_PARAM_NAME:
-            raise DaskPipesException("Slot name {} is reserved by pipeline's transform signature".format(slot_name))
+            raise MldagException("Slot name {} is reserved by mldag's transform signature".format(slot_name))
 
         return NodeSlot(self, slot_name)
 
     def add_vertex(self, node: NodeBase, vertex_id=None):
         """
-        Add vertex node to current pipeline
+        Add vertex node to current mldag
         To remove vertex (node), use remove_vertex
 
         Parameters
@@ -1343,7 +1464,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
         Raises
         -------
-        DaskPipesException
+        MldagException
             If vertex already belongs to another graph
             If vertex is not subclass of VertexBase
         ValueError
@@ -1351,25 +1472,25 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         """
         if node.name is None:
             node_name_counter = 0
-            while PipelineBase._get_default_node_name(node, node_name_counter) in self.node_dict:
+            while MLDagBase._get_default_node_name(node, node_name_counter) in self.node_dict:
                 node_name_counter += 1
-            node.name = PipelineBase._get_default_node_name(node, node_name_counter)
+            node.name = MLDagBase._get_default_node_name(node, node_name_counter)
         if node.name in self.node_dict:
             if self.node_dict[node.name] is not node:
-                raise DaskPipesException("Duplicate name for node {}".format(node))
+                raise MldagException("Duplicate name for node {}".format(node))
         self.node_dict[node.name] = node
         return super().add_vertex(node, vertex_id=vertex_id)
 
     # TODO: Rename to remove_node
     def remove_vertex(self, node: NodeBase) -> VertexBase:
         """
-        Remove vertex from pipeline
+        Remove vertex from mldag
         To add vertex (node), use add_vertex
 
         Parameters
         ----------
         node : NodeBase
-            node to remove, must be part of current pipeline
+            node to remove, must be part of current mldag
 
         Returns
         -------
@@ -1378,15 +1499,15 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
         Raises
         -------
-        DaskPipesException
+        MldagException
             If vertex is not subclass of VertexBase
         ValueError
             If vertex is not part of current graph
         """
         if node.name is None:
-            raise DaskPipesException("Node is unnamed")
+            raise MldagException("Node is unnamed")
         if node.graph is not self:
-            raise DaskPipesException("Node does not belong to pipeline")
+            raise MldagException("Node does not belong to mldag")
         if node.name in self.node_dict:
             if self.node_dict[node.name] is not node:
                 raise ValueError("Node does not equal to node_dict['{}']".format(node.name))
@@ -1448,7 +1569,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
         Raises
         ------------
-        DaskPipesException
+        MldagException
             If vertex is not subclass of NodeBase
         """
         NodeBase.validate(vertex)
@@ -1457,7 +1578,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
                      upstream_slot: Optional[str] = None,
                      downstream_slot: Optional[str] = None):
         """
-        Method, used by NodeSlot to allow using Pipeline in byte-shift notation chains node1['X'] >> p['X']
+        Method, used by NodeSlot to allow using MLDagBase in byte-shift notation chains node1['X'] >> p['X']
 
         Not implemented
 
@@ -1477,7 +1598,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
                        upstream_slot: Optional[str] = None,
                        downstream_slot: Optional[str] = None, ):
         """
-        Method, used by NodeSlot to allow using Pipeline in byte-shift notation chains p['X'] >> node1['X']
+        Method, used by NodeSlot to allow using MLDagBase in byte-shift notation chains p['X'] >> node1['X']
 
         Parameters
         ----------
@@ -1493,8 +1614,8 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
     def remove_input(self, name):
         """
-        Remove input by name from pipeline
-        Removes all conections between pipeline input with name 'name' and any nodes
+        Remove input by name from mldag
+        Removes all conections between mldag input with name 'name' and any nodes
 
         To remove input piped to specific node, use remove_input_node
         To add input node, use set_input
@@ -1509,16 +1630,16 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         """
         len_before = len(self.inputs)
         if len_before == 0:
-            raise DaskPipesException("{} Does not have any arguments".format(self))
+            raise MldagException("{} Does not have any arguments".format(self))
         self.inputs = [i for i in self.inputs if i.name != name]
         if len(self.inputs) == len_before:
-            raise DaskPipesException("{} Does not have argument {}".format(self, name))
+            raise MldagException("{} Does not have argument {}".format(self, name))
         self._update_fit_transform_signatures()
 
     def remove_input_node(self, node: NodeBase):
         """
-        Unset node as pipeline output
-        Removes all connections between node inputs and pipeline inputs
+        Unset node as mldag output
+        Removes all connections between node inputs and mldag inputs
 
         To add input node, use set_input
 
@@ -1560,8 +1681,8 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
                 upstream_slot = upstream_outputs[0]
             else:
                 raise ValueError("Upstream node {} has multiple outputs. Upstream node name must be one of {}. "
-                                 "Example: upstream['node_name'] >> pipeline['output'] ".format(node,
-                                                                                                upstream_outputs))
+                                 "Example: upstream['node_name'] >> mldag['output'] ".format(node,
+                                                                                             upstream_outputs))
 
         if upstream_slot not in upstream_outputs:
             raise ValueError(
@@ -1578,16 +1699,16 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         p_desc = "Output of {}".format(node.name)
 
         self.outputs.append(
-            PipelineOutput(name, node, upstream_slot, upstream_output.type, p_desc)
+            MLDagOutput(name, node, upstream_slot, upstream_output.type, p_desc)
         )
 
     def set_input(self, node: NodeBase, name=None, downstream_slot=None, suffix: Optional[str] = None):  # noqa: C901
         """
         Several actions are performed:
 
-        1. Add 'node' to current pipeline
+        1. Add 'node' to current mldag
         2. if 'name' is None, infer it
-        3. add 'name' to pipeline fit and transform signatures
+        3. add 'name' to mldag fit and transform signatures
         4. connect argument 'name' to 'downstream_slot' of 'node'
 
         How 'name' is inferred: 'downstream_slot'+'suffix'
@@ -1595,19 +1716,19 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
         !Recursive when downstream_slot is not specified: applied to each input slot of node
 
-        Raises DaskPipesException when name is specified,
+        Raises MldagException when name is specified,
         downstream_slot is not specified, and node has multiple input slots
 
         Relates:
-        To see list of current pipeline inputs, use property .inputs
+        To see list of current mldag inputs, use property .inputs
         To remove input, use remove_input or remove_input_node
 
-        Outputs of node are not set. instead, you can get output of all leaf nodes from PipelineRun class
+        Outputs of node are not set. instead, you can get output of all leaf nodes from MLDagRun class
 
         Parameters
         ----------
         node
-            Node to set as pipeline input
+            Node to set as mldag input
         name : str, optional
             Name of input (default: 'downstream_slot'+'suffix' )
         downstream_slot : str, optional
@@ -1621,19 +1742,19 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         """
 
         self.validate_vertex(node)
-        # Assign node to current pipeline
+        # Assign node to current mldag
         node.graph = self
 
         node_inputs = {i.name: i for i in node.inputs}
         if len(node_inputs) == 0:
-            raise DaskPipesException("{} does not have any inputs".format(node))
+            raise MldagException("{} does not have any inputs".format(node))
 
-        # Cannot pipe single pipeline input to multiple node inputs
+        # Cannot pipe single mldag input to multiple node inputs
         if downstream_slot is None:
             if name is not None and len(node_inputs) > 1:
-                raise DaskPipesException(
+                raise MldagException(
                     "Node {} has multiple inputs, specific "
-                    "pipeline argument name not supported. "
+                    "mldag argument name not supported. "
                     "Use suffix instead".format(node))
             for inp in node_inputs.keys():
                 self.set_input(node, name, inp, suffix=suffix)
@@ -1641,7 +1762,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
         # Check existence of node input
         if downstream_slot not in node_inputs:
-            raise DaskPipesException(
+            raise MldagException(
                 "{} does not have input {}; available: {}".format(node, downstream_slot, list(node_inputs.keys())))
 
         if name is None:
@@ -1682,13 +1803,13 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
                 raise ValueError(
                     "Variadic keyword inputs must have name '{}', got '{}'".format(KWARGS_PARAM_NAME, name))
 
-        self.inputs.append(PipelineInput(name=name,
-                                         downstream_slot=downstream_slot,
-                                         downstream_node=node,
-                                         default=param.default,
-                                         kind=param.kind,
-                                         type=p_type,
-                                         desc=p_desc))
+        self.inputs.append(MLDagInput(name=name,
+                                      downstream_slot=downstream_slot,
+                                      downstream_node=node,
+                                      default=param.default,
+                                      kind=param.kind,
+                                      type=p_type,
+                                      desc=p_desc))
         self._update_fit_transform_signatures()
 
     def _update_fit_transform_signatures(self):
@@ -1734,8 +1855,8 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         General method for connecting two nodes
         Creates directed connection with upstream and downstream slots
 
-        if connection between slots was already made, raises DaskPipesException
-        if downstream_slot already has piped input, raises DaskPipesException,
+        if connection between slots was already made, raises MldagException
+        if downstream_slot already has piped input, raises MldagException,
         since multiple inputs for one slot are not allowed
 
         used in _set_relationship and therefore in all
@@ -1760,7 +1881,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         if upstream_slot is None:
             upstream_outputs = upstream.outputs
             if len(upstream_outputs) > 1:
-                raise DaskPipesException(
+                raise MldagException(
                     "Upstream has multiple outputs, cannot infer upstream_slot. "
                     "Please, provide upstream_slot as one of {}".format(
                         [i.name for i in upstream_outputs]))
@@ -1770,13 +1891,13 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
             downstream_inputs = downstream.inputs
             slots_no_default = [i for i in downstream_inputs if i.default == INSPECT_EMPTY_PARAMETER]
             if len(slots_no_default) > 1:
-                raise DaskPipesException(
+                raise MldagException(
                     "{} has multiple inputs, cannot infer downstream_slot. "
                     "Please, provide downstream_slot as one of {}".format(
                         downstream,
                         [i.name for i in downstream_inputs]))
             elif len(slots_no_default) == 0:
-                raise DaskPipesException(
+                raise MldagException(
                     "{} does not have inputs without default value to pipe into. "
                     "Cannot infer downstream_slot. Specify arguments for fit method".format(
                         downstream,
@@ -1793,9 +1914,9 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
 
     def _parse_arguments(self, *args, **kwargs) -> Dict[str, Dict[str, Any]]:
         """
-        Parse fit arguments based on current pipeline inputs and return dictionary of node inputs.
+        Parse fit arguments based on current mldag inputs and return dictionary of node inputs.
 
-        This function is needed, since pipeline's fit and transform signatures are dynamic
+        This function is needed, since mldag's fit and transform signatures are dynamic
         and we need to mimic python behaviour (call inspect.getcallargs on function with specific arguments)
 
         If argument has a default value and not provided,
@@ -1816,7 +1937,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         fit_params = [param for param in self.input_parameters if param.name in self._param_downstream_mapping]
 
         # Used for injection of custom signature before passing to getcallargs
-        # We need to distill self.fit from parameters passed to pipeline against parameters passed to input nodes
+        # We need to distill self.fit from parameters passed to mldag against parameters passed to input nodes
         # This function is used to call inspect.getcallargs for getting function arguments without function itself
         def fit(*_, **__):
             pass
@@ -1835,10 +1956,10 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
         node_arguments: Dict[str, Dict[str, Any]] = dict()
         for node in self.vertices:
             if not isinstance(node, NodeBase):
-                raise DaskPipesException("Pipeline must contain only {}".format(NodeBase.__name__))
+                raise MldagException("MLDagBase must contain only {}".format(NodeBase.__name__))
             node_arguments[node.name] = dict()
 
-        # Convert pipeline arguments to node arguments
+        # Convert mldag arguments to node arguments
         for inp in self.inputs:
             if inp.kind == inspect.Parameter.VAR_KEYWORD:
                 inp_name = '**'
@@ -1852,8 +1973,8 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
                 # We want to be extremely careful on each step
                 # Even though, _parse_arguments must return full proper dictionary, filled with default values
                 # Double-check it here
-                raise DaskPipesException(
-                    "Pipeline input {}->{}['{}'] not provided "
+                raise MldagException(
+                    "MLDagBase input {}->{}['{}'] not provided "
                     "and does not have default value".format(inp.name,
                                                              inp.downstream_node,
                                                              inp.downstream_slot, ))
@@ -1863,7 +1984,7 @@ class PipelineBase(Graph, metaclass=PipelineMeta):
     # TODO: rename method (why? - we do not add edges. instead, we add connections)
     def add_edge(self, node_connection: NodeConnection, edge_id=None) -> NodeConnection:
         """
-        Add NodeConnection to current pipeline
+        Add NodeConnection to current mldag
         node_connection must already have assigned upstream and downstream nodes
 
         Parameters
